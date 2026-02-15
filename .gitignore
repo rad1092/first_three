@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+.build/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# PyInstaller
+*.spec
+*.manifest
+*.exe
+
+# Windows
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# IDE/editor
+.vscode/
+.idea/
+
+# Runtime logs / local artifacts
+*.log
+
+# LocalAppData outputs (runtime-created; never commit)
+BitNet/
+AnalyzerApp/
