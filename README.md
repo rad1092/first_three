@@ -1,120 +1,43 @@
-# BitNet Tools
+## Frontend Refactor Plan (버튼 없는 Perplexity 스타일)
 
-BitNet/Ollama 기반의 **로컬 데이터 분석 보조 도구**입니다.  
-CSV를 중심으로 Excel/문서(PDF, DOCX, PPTX) 입력을 정규화해 요약·비교·리포트·시각화·질문 기반 분석 파이프라인으로 연결합니다.
+### 목표
+- 버튼 기반 흐름 제거
+- 단일 입력(자연어) + 파일 첨부 + 대화 로그 중심 UI로 전면 개편
+- 결과는 "받아보기"가 목적(사용자가 이후 조합/해석)
+- 앱 창(데스크톱) 형태로 제공 (브라우저 탭 X)
 
----
+### UX 규칙
+1) 단일 입력창
+- Enter = 실행
+- Shift+Enter = 줄바꿈
+- 전송 버튼(분석/실행 등) 제거
 
-## 저장소 점검 결과 요약
+2) 파일 첨부(여러 개)
+- 여러 파일 첨부 가능 (csv/xlsx 우선)
+- 기본 대상 = "현재 붙인 파일(현재 활성 dataset)"
+- 대화 중 새 파일이 추가되면, 자연어로 "이것도 같이 봐줘/비교해줘"로 targets 확장 가능
 
-### 1) 현재 제공 기능
+3) 세션(새 채팅) + 로그 유지
+- 세션 목록(채팅방) 존재
+- 새 채팅 = 새 세션 생성
+- 이전 세션은 삭제 전까지 유지
+- 사용자가 원할 때 세션 삭제 가능 (Perplexity처럼)
 
-- CLI 분석 명령
-  - `analyze`: 단일 파일 분석 payload + (옵션) Ollama 즉시 질의
-  - `report`: Markdown 보고서 생성
-  - `multi-analyze`: 다중 CSV 통합 분석(JSON/MD)
-  - `compare`: 전/후 CSV 분포 비교
-  - `doctor`: 로컬 환경 진단
-  - `ui`, `desktop`: 웹 UI/데스크톱 UI 실행
-- 입력 전처리
-  - CSV 직접 입력
-  - Excel(`.xlsx`) base64 로드, 시트 선택, CSV 정규화
-  - 문서(`.pdf`, `.docx`, `.pptx`) 표 추출 후 분석 요청 변환
-- 분석 코어
-  - 결측/타입/기초 수치 통계(평균/최소/최대) 생성
-  - 다중 CSV 프로파일 집계 및 캐시(`.bitnet_cache`) 활용
-  - 룰 기반 이상 징후 설명 후보 생성(결측 집중/편중/단위 불일치/최근 급변)
-  - 지리 좌표 유효성 검사 및 의심 레코드 산출
-- 시각화/추천
-  - 다중 CSV 차트 생성(환경에 따라 matplotlib 기반)
-  - 질문/스키마 기반 차트 타입 추천
-- API/UI
-  - 로컬 HTTP 서버에서 분석/전처리/비교/플래너 관련 엔드포인트 제공
-  - 브라우저 UI 정적 파일 제공
+4) 결과 표시 규칙
+- 결과는 3타입으로만 출력:
+  - TextResult: 요약/근거/설명
+  - TableResult: HTML table로 표시(1차)
+  - ChartResult: PNG 생성 후 썸네일 표시 + 클릭 확대
+- 표가 커지면 안전장치(row limit) 적용 가능
 
-### 2) 어떤 분석이 가능한가
+5) 파싱 실패 처리(최후 안전망)
+- 자연어 처리 성능을 최우선으로 강화
+- 그래도 실패 시: "내가 이해한 의도 + 부족한 정보 + 예시 3개"를 TextResult로 반환
 
-- 데이터 품질 분석: 결측, 타입 일관성, 지배 카테고리 편향, 단위 혼재
-- 기술통계 분석: 컬럼별 수치 통계, 그룹 합계/랭킹/샘플 추출
-- 다중 파일 분석: 여러 CSV의 프로파일 비교/통합 리포트 생성
-- 전후 비교 분석: before/after CSV 분포 차이 확인
-- 지리 데이터 검증: 위경도 범위/이상치 플래깅
-- 문서/엑셀 표 기반 분석: 원본을 CSV 형태로 정규화한 뒤 동일 파이프라인 적용
+### 설계 원칙(연결 분리)
+- Router: 자연어 → intent + args + targets
+- Core: intent(args, targets) → Result(Text/Table/Chart)
+- UI: Result를 카드 형태로 렌더링 + 세션/첨부파일 목록 관리
 
-### 3) 자연어 처리(NLP) 수준 진단
 
-이 프로젝트의 NLP는 **경량 규칙 기반 + LLM 연동 보조형** 수준입니다.
-
-- 강점
-  - 한/영 키워드 기반 의도 파싱(`top N`, `샘플 N`, `임계값`, `전후` 등)
-  - 스키마 시맨틱 별칭 매핑(질문 용어 ↔ 실제 컬럼명)
-  - 분석 계획(플랜) 자동 구성 후 실행으로 질문-분석 연결
-  - 최종 설명은 Ollama 모델(BitNet 등)로 확장 가능
-- 한계
-  - 복잡 문장 의미 해석, 다중 의도 분해, 문맥 추론은 제한적
-  - 모델 없이 동작하는 NLP는 정규식/사전 중심이라 표현 변화에 취약
-  - 고급 NLU(개체/관계 추출, 추론 체인, 다중 턴 대화 메모리)는 별도 구현 없음
-
-> 결론: “완전한 자연어 이해 엔진”보다는, **정형 데이터 분석 자동화에 최적화된 실무형 NLP 어댑터**에 가깝습니다.
-
----
-
-## 빠른 시작
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
-```
-
-CLI 도움말:
-
-```bash
-python -m bitnet_tools.cli --help
-```
-
-주요 예시:
-
-```bash
-# 단일 분석 payload
-bitnet-analyze analyze sample.csv --question "핵심 지표 요약" --out payload.json
-
-# Markdown 보고서
-bitnet-analyze report sample.csv --question "핵심 요약" --out analysis_report.md
-
-# 다중 CSV 분석
-bitnet-analyze multi-analyze a.csv b.csv --question "지역별 차이" --out-json multi.json --out-report multi.md
-
-# 전/후 비교
-bitnet-analyze compare --before before.csv --after after.csv --out compare.json
-
-# 웹 UI
-bitnet-analyze ui --host 127.0.0.1 --port 8765
-
-# 환경 진단
-bitnet-analyze doctor --model bitnet:latest
-```
-
----
-
-## 입력 지원 범위
-
-- `csv`: 텍스트/파일 기반 직접 분석
-- `excel`: `.xlsx` 지원(시트 선택 후 CSV 정규화)
-- `document`: `.pdf`, `.docx`, `.pptx`에서 표 추출 후 분석
-
-제약:
-- `.xls`(구형 바이너리 엑셀) 미지원
-- 표/헤더 품질이 낮은 문서는 추출 실패 가능
-- 대형 파일/복잡 문서는 전처리 단계에서 시간 증가 가능
-
----
-
-## 테스트 상태
-
-현재 테스트 스위트 기준, 핵심 기능(분석/비교/플래너/문서추출/웹/UI 계약/오프라인 번들)이 통과하는 상태입니다.
-
-```bash
-pytest -q
-```
 
