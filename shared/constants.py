@@ -32,5 +32,5 @@ def ensure_dirs() -> None:
     for rel in ("bin", "models", "config", "cache", "logs"):
         (bitnet_root / rel).mkdir(parents=True, exist_ok=True)
 
-    for rel in ("results", "logs"):
+    for rel in ("results/exports", "results/charts", "logs"):
         (analyzer_root / rel).mkdir(parents=True, exist_ok=True)
