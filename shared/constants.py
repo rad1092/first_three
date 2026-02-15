@@ -32,5 +32,12 @@ def ensure_dirs() -> None:
     for rel in ("bin", "models", "config", "cache", "logs"):
         (bitnet_root / rel).mkdir(parents=True, exist_ok=True)
 
-    for rel in ("results/exports", "results/charts", "logs"):
-        (analyzer_root / rel).mkdir(parents=True, exist_ok=True)
+    # 가독성 개선: "results/exports" 같은 문자열 대신 Path로 조립
+    dirs = [
+        analyzer_root / "results" / "exports",
+        analyzer_root / "results" / "charts",
+        analyzer_root / "logs",
+    ]
+    for d in dirs:
+        d.mkdir(parents=True, exist_ok=True)
+
