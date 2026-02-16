@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from time import monotonic
 from typing import Literal
@@ -8,6 +9,8 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from shared.constants import BITNETD_BASE_URL
+
+logger = logging.getLogger(__name__)
 
 HealthStatus = Literal["ready", "starting", "not_ready", "shutting_down", "error"]
 AllowedAppName = Literal["analyzer", "chat", "agent"]
@@ -95,13 +98,21 @@ class ServerState:
         now = monotonic()
         async with self.lock:
             before_count = len(self.clients)
-            expired = [
-                client_id
-                for client_id, info in self.clients.items()
-                if (now - info.last_seen) > ttl_seconds
-            ]
-            for client_id in expired:
+            expired: list[tuple[str, float]] = []
+
+            for client_id, info in self.clients.items():
+                age_seconds = now - info.last_seen
+                if age_seconds > ttl_seconds:
+                    expired.append((client_id, age_seconds))
+
+            for client_id, age_seconds in expired:
                 self.clients.pop(client_id, None)
+                logger.debug(
+                    "Pruned expired client id=%s age_seconds=%.3f ttl_seconds=%s",
+                    client_id,
+                    age_seconds,
+                    ttl_seconds,
+                )
 
             after_count = len(self.clients)
             self._update_last_count(after_count)
