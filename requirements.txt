@@ -3,6 +3,7 @@ uvicorn>=0.29
 pywebview>=5.0
 pydantic>=2.6
 python-dotenv>=1.0
+requests>=2.31
 
 # Phase 1+ (placeholder only)
 # transformers
