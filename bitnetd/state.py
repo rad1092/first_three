@@ -39,6 +39,7 @@ class ServerState:
         self.clients: dict[str, ClientInfo] = {}
         self.active_generations: int = 0
         self.exit_pending: bool = False
+        self.has_ever_had_client: bool = False
         self.lock = asyncio.Lock()
 
     def uptime_ms(self) -> int:
@@ -48,6 +49,7 @@ class ServerState:
         async with self.lock:
             self.clients[client_id] = ClientInfo(app_name=app_name, last_seen=monotonic())
             self.exit_pending = False
+            self.has_ever_had_client = True
             return len(self.clients)
 
     async def heartbeat_client(self, client_id: str) -> tuple[bool, int, str | None]:
@@ -83,7 +85,11 @@ class ServerState:
 
     async def should_exit_now(self) -> bool:
         async with self.lock:
-            should_exit = len(self.clients) == 0 and self.active_generations == 0
+            should_exit = (
+                self.has_ever_had_client
+                and len(self.clients) == 0
+                and self.active_generations == 0
+            )
             if should_exit:
                 self.exit_pending = True
             return should_exit
