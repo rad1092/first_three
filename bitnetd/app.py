@@ -38,8 +38,10 @@ class ClientResponse(BaseModel):
 async def _prune_loop() -> None:
     while True:
         await asyncio.sleep(PRUNE_INTERVAL_SECONDS)
-        _, client_count = await state.prune_expired_clients(ttl_seconds=CLIENT_TTL_SECONDS)
-        if client_count == 0 and await state.should_exit_now():
+        removed_count, before_count, after_count = await state.prune_expired_clients(
+            ttl_seconds=CLIENT_TTL_SECONDS
+        )
+        if removed_count > 0 and state.should_exit_on_transition_to_zero(before_count, after_count):
             state.exit_now()
 
 
@@ -95,12 +97,14 @@ async def unregister_client(
     background_tasks: BackgroundTasks,
     _: str = Depends(require_token),
 ) -> ClientResponse:
-    ok, client_count, error = await state.unregister_client(client_id=str(payload.client_id))
+    ok, before_count, after_count, error = await state.unregister_client(
+        client_id=str(payload.client_id)
+    )
 
-    if client_count == 0 and await state.should_exit_now():
+    if state.should_exit_on_transition_to_zero(before_count, after_count):
         background_tasks.add_task(state.exit_now)
 
-    return ClientResponse(ok=ok, client_count=client_count, error=error)
+    return ClientResponse(ok=ok, client_count=after_count, error=error)
 
 
 @app.api_route("/generate", methods=["POST"])

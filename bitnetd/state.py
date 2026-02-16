@@ -40,17 +40,34 @@ class ServerState:
         self.active_generations: int = 0
         self.exit_pending: bool = False
         self.has_ever_had_client: bool = False
+        self.last_client_count: int = 0
         self.lock = asyncio.Lock()
 
     def uptime_ms(self) -> int:
         return int((monotonic() - self.started_at) * 1000)
+
+    def _update_last_count(self, new_count: int) -> None:
+        self.last_client_count = new_count
+
+    def should_exit_on_transition_to_zero(self, prev_count: int, new_count: int) -> bool:
+        should_exit = (
+            self.has_ever_had_client
+            and prev_count > 0
+            and new_count == 0
+            and self.active_generations == 0
+        )
+        if should_exit:
+            self.exit_pending = True
+        return should_exit
 
     async def register_client(self, client_id: str, app_name: AllowedAppName) -> int:
         async with self.lock:
             self.clients[client_id] = ClientInfo(app_name=app_name, last_seen=monotonic())
             self.exit_pending = False
             self.has_ever_had_client = True
-            return len(self.clients)
+            new_count = len(self.clients)
+            self._update_last_count(new_count)
+            return new_count
 
     async def heartbeat_client(self, client_id: str) -> tuple[bool, int, str | None]:
         async with self.lock:
@@ -62,17 +79,22 @@ class ServerState:
             self.clients[client_id] = info
             return True, len(self.clients), None
 
-    async def unregister_client(self, client_id: str) -> tuple[bool, int, str | None]:
+    async def unregister_client(self, client_id: str) -> tuple[bool, int, int, str | None]:
         async with self.lock:
+            before_count = len(self.clients)
             removed = self.clients.pop(client_id, None)
+            after_count = len(self.clients)
+            self._update_last_count(after_count)
+
             if removed is None:
-                return False, len(self.clients), "client_not_registered"
+                return False, before_count, after_count, "client_not_registered"
 
-            return True, len(self.clients), None
+            return True, before_count, after_count, None
 
-    async def prune_expired_clients(self, ttl_seconds: int = 15) -> tuple[int, int]:
+    async def prune_expired_clients(self, ttl_seconds: int = 15) -> tuple[int, int, int]:
         now = monotonic()
         async with self.lock:
+            before_count = len(self.clients)
             expired = [
                 client_id
                 for client_id, info in self.clients.items()
@@ -81,18 +103,9 @@ class ServerState:
             for client_id in expired:
                 self.clients.pop(client_id, None)
 
-            return len(expired), len(self.clients)
-
-    async def should_exit_now(self) -> bool:
-        async with self.lock:
-            should_exit = (
-                self.has_ever_had_client
-                and len(self.clients) == 0
-                and self.active_generations == 0
-            )
-            if should_exit:
-                self.exit_pending = True
-            return should_exit
+            after_count = len(self.clients)
+            self._update_last_count(after_count)
+            return len(expired), before_count, after_count
 
     async def health(self) -> HealthResponse:
         async with self.lock:
