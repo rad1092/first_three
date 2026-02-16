@@ -82,6 +82,30 @@
         margin-bottom: 14px;
         color: var(--muted);
       }
+      .active-dataset {
+        margin-top: 10px;
+        font-size: 13px;
+        color: #cbd5e1;
+      }
+      .dataset-list {
+        margin-top: 8px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .dataset-chip {
+        border: 1px solid #314055;
+        background: #162234;
+        color: #cbd5e1;
+        border-radius: 999px;
+        padding: 4px 10px;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .dataset-chip.active {
+        border-color: #60a5fa;
+        background: #1d3a5a;
+      }
       .messages { display: flex; flex-direction: column; gap: 10px; }
       .bubble {
         max-width: min(760px, 88%);
@@ -90,15 +114,8 @@
         white-space: pre-wrap;
         word-break: break-word;
       }
-      .bubble.user {
-        margin-left: auto;
-        background: #1d4ed8;
-      }
-      .bubble.assistant {
-        margin-right: auto;
-        background: #1f2937;
-        border: 1px solid #374151;
-      }
+      .bubble.user { margin-left: auto; background: #1d4ed8; }
+      .bubble.assistant { margin-right: auto; background: #1f2937; border: 1px solid #374151; }
       .failure-actions { display: none; gap: 10px; margin-top: 10px; }
       .composer {
         border-top: 1px solid var(--line);
@@ -146,7 +163,9 @@
         <aside class="sessions" id="sessions"></aside>
         <section class="chat" id="chat">
           <div class="guide">
-            Analyzer Phase 3: 세션/로그(history.jsonl) 기반 UI입니다.
+            Analyzer Phase 4: 첨부 즉시 자동 로드 + Dataset Registry
+            <div class="active-dataset" id="active-dataset">Active: 없음</div>
+            <div class="dataset-list" id="dataset-list"></div>
             <div class="failure-actions" id="failure-actions">
               <button id="btn-install">Install/Build Engine</button>
               <button id="btn-download">Download Model</button>
@@ -157,7 +176,7 @@
       </div>
 
       <footer class="composer">
-        <button title="파일 첨부">📎</button>
+        <button id="btn-attach" title="파일 첨부">📎</button>
         <textarea id="input" placeholder="메시지를 입력하세요. Enter 전송 / Shift+Enter 줄바꿈"></textarea>
       </footer>
     </div>
@@ -169,10 +188,11 @@
         currentSessionId: null,
         messages: [],
         sessionsVisible: true,
+        datasets: [],
+        activeDataset: null,
       };
 
       function $(id) { return document.getElementById(id); }
-
       function toast(msg) { alert(msg || 'not implemented yet'); }
 
       function renderStatus() {
@@ -185,7 +205,6 @@
       function renderSessions() {
         const root = $('sessions');
         root.innerHTML = '';
-
         if (state.sessions.length === 0) {
           const empty = document.createElement('div');
           empty.className = 'session-meta';
@@ -200,7 +219,7 @@
           btn.innerHTML = `<div>${escapeHtml(s.title)}</div><div class="session-meta">메시지 ${s.message_count}</div>`;
           btn.onclick = async () => {
             const data = await window.pywebview.api.switch_session(s.session_id);
-            applySessionState(data);
+            applyState(data);
           };
           root.appendChild(btn);
         });
@@ -217,6 +236,28 @@
         });
       }
 
+      function renderDatasets() {
+        const active = state.activeDataset;
+        const activeLabel = active
+          ? `Active: ${active.name} (${active.row_count}행 x ${active.col_count}열)`
+          : 'Active: 없음';
+        $('active-dataset').textContent = activeLabel;
+
+        const list = $('dataset-list');
+        list.innerHTML = '';
+        state.datasets.forEach((d) => {
+          const chip = document.createElement('button');
+          chip.className = `dataset-chip ${active && active.dataset_id === d.dataset_id ? 'active' : ''}`;
+          chip.textContent = d.name;
+          chip.title = d.notes || '';
+          chip.onclick = async () => {
+            const data = await window.pywebview.api.set_active_dataset(d.dataset_id);
+            applyState(data);
+          };
+          list.appendChild(chip);
+        });
+      }
+
       function renderSessionPanelVisibility() {
         const panel = $('sessions');
         const main = $('main-layout');
@@ -229,44 +270,36 @@
         }
       }
 
-      function applySessionState(data) {
+      function applyState(data) {
         state.sessions = data.sessions || [];
         state.currentSessionId = data.current_session_id || null;
         state.messages = data.messages || [];
+        state.datasets = data.datasets || [];
+        state.activeDataset = data.active_dataset || null;
         renderSessions();
         renderMessages();
+        renderDatasets();
       }
 
       function escapeHtml(str) {
-        return (str || '')
-          .replaceAll('&', '&amp;')
-          .replaceAll('<', '&lt;')
-          .replaceAll('>', '&gt;');
+        return (str || '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
       }
 
       async function init() {
         const data = await window.pywebview.api.get_initial_state();
         state.connectionOk = !!data.connection_ok;
-        applySessionState(data);
+        applyState(data);
         renderStatus();
         renderSessionPanelVisibility();
       }
 
-      $('btn-new').onclick = async () => {
-        const data = await window.pywebview.api.new_session();
-        applySessionState(data);
-      };
-
-      $('btn-toggle').onclick = () => {
-        state.sessionsVisible = !state.sessionsVisible;
-        renderSessionPanelVisibility();
-      };
-
+      $('btn-new').onclick = async () => applyState(await window.pywebview.api.new_session());
+      $('btn-toggle').onclick = () => { state.sessionsVisible = !state.sessionsVisible; renderSessionPanelVisibility(); };
       $('btn-delete').onclick = async () => {
         if (!state.currentSessionId) return;
-        const data = await window.pywebview.api.delete_session(state.currentSessionId);
-        applySessionState(data);
+        applyState(await window.pywebview.api.delete_session(state.currentSessionId));
       };
+      $('btn-attach').onclick = async () => applyState(await window.pywebview.api.attach_files());
 
       $('btn-install').onclick = async () => toast(await window.pywebview.api.install_build_engine());
       $('btn-download').onclick = async () => toast(await window.pywebview.api.download_model());
@@ -278,7 +311,7 @@
           if (!text) return;
           const data = await window.pywebview.api.send_message(text);
           $('input').value = '';
-          applySessionState(data);
+          applyState(data);
         }
       });
 
