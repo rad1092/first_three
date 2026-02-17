@@ -22,6 +22,7 @@ class DatasetMeta:
     sheet_name: str | None = None
     encoding: str | None = None
     notes: str | None = None
+    columns: list[str] | None = None
 
 
 class DatasetRegistry:
@@ -47,6 +48,7 @@ class DatasetRegistry:
             sheet_name=meta.get("sheet_name"),
             encoding=meta.get("encoding"),
             notes=meta.get("notes"),
+            columns=[str(c) for c in df.columns.tolist()],
         )
 
     def register_files(self, file_paths: list[str]) -> list[DatasetMeta]:
@@ -73,6 +75,7 @@ class DatasetRegistry:
                     loaded_ok=False,
                     row_count=0,
                     col_count=0,
+                    columns=[],
                     notes=(
                         "자동 로드에 실패했습니다. 인코딩/헤더/시트 선택을 자동으로 복구 시도했지만 완료하지 못했습니다. "
                         "파일을 다시 저장한 뒤 재시도해 주세요. "
@@ -104,6 +107,9 @@ class DatasetRegistry:
 
     def list_all(self) -> list[DatasetMeta]:
         return list(self._datasets.values())
+
+    def get_dataset(self, dataset_id: str) -> DatasetMeta | None:
+        return self._datasets.get(dataset_id)
 
     def as_state(self) -> dict[str, Any]:
         active = self.get_active()

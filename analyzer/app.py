@@ -11,6 +11,7 @@ import webview
 from .backend import check_bitnetd_health
 from .datasets import DatasetMeta, DatasetRegistry
 from .history import append_event, ensure_history_file, load_sessions
+from .router import route
 
 
 @dataclass
@@ -33,6 +34,22 @@ def _extract_title_from_text(text: str, max_len: int = 20) -> str:
         return "새 채팅"
     return sentence[:max_len]
 
+
+
+
+def _router_actions_to_text(actions: list[dict]) -> str:
+    lines = ["Router 결과:"]
+    for idx, action in enumerate(actions, start=1):
+        targets = action.get("targets", {})
+        lines.append(f"{idx}) intent={action.get('intent')}")
+        lines.append(f"   datasets={targets.get('datasets', [])}")
+        lines.append(f"   columns={targets.get('columns', [])}")
+        lines.append(f"   args={action.get('args', {})}")
+        if action.get("needs_clarification"):
+            clarify = action.get("clarify") or {}
+            lines.append(f"   clarify_question={clarify.get('question', '')}")
+            lines.append(f"   candidates={clarify.get('candidates', [])}")
+    return "\n".join(lines)
 
 def _dataset_summary_lines(metas: list[DatasetMeta]) -> str:
     lines = ["첨부 파일 자동 로드 결과:"]
@@ -283,12 +300,15 @@ class AnalyzerApi:
                 }
             )
 
+        session_state = self._state()
+        actions = route(trimmed, session_state)
+
         append_event(
             {
                 "type": "message_added",
                 "session_id": self.current_session_id,
                 "role": "assistant",
-                "text": "Phase 6에서 응답이 제공됩니다.",
+                "text": _router_actions_to_text(actions),
                 "created_at": _utc_now_iso(),
             }
         )
