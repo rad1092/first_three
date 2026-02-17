@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Analyzer</title>
+    <style>
+      :root {
+        --bg: #0f172a;
+        --panel: #111827;
+        --text: #e5e7eb;
+        --muted: #9ca3af;
+        --ok: #22c55e;
+        --fail: #ef4444;
+        --line: #1f2937;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: "Segoe UI", "Malgun Gothic", sans-serif;
+      }
+      .app { min-height: 100vh; display: grid; grid-template-rows: auto 1fr auto; }
+      .top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(17,24,39,.9);
+      }
+      .left-actions { display: flex; gap: 8px; align-items: center; }
+      .status {
+        padding: 6px 12px;
+        border-radius: 999px;
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .status.ok {
+        background: rgba(34,197,94,.15);
+        color: var(--ok);
+        border: 1px solid rgba(34,197,94,.35);
+      }
+      .status.fail {
+        background: rgba(239,68,68,.15);
+        color: var(--fail);
+        border: 1px solid rgba(239,68,68,.35);
+      }
+      .main {
+        display: grid;
+        grid-template-columns: 260px 1fr;
+        min-height: 0;
+      }
+      .sessions {
+        border-right: 1px solid var(--line);
+        background: rgba(17,24,39,.7);
+        padding: 10px;
+        overflow-y: auto;
+      }
+      .sessions.hidden { display: none; }
+      .session-item {
+        width: 100%;
+        text-align: left;
+        border: 1px solid #263244;
+        border-radius: 10px;
+        background: #141d2b;
+        color: var(--text);
+        padding: 10px;
+        margin-bottom: 8px;
+        cursor: pointer;
+      }
+      .session-item.active { border-color: #3b82f6; }
+      .session-meta { font-size: 12px; color: var(--muted); margin-top: 6px; }
+      .chat { padding: 20px; overflow-y: auto; }
+      .guide {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 14px;
+        margin-bottom: 14px;
+        color: var(--muted);
+      }
+      .active-dataset {
+        margin-top: 10px;
+        font-size: 13px;
+        color: #cbd5e1;
+      }
+      .dataset-list {
+        margin-top: 8px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .dataset-chip {
+        border: 1px solid #314055;
+        background: #162234;
+        color: #cbd5e1;
+        border-radius: 999px;
+        padding: 4px 10px;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .dataset-chip.active {
+        border-color: #60a5fa;
+        background: #1d3a5a;
+      }
+      .messages { display: flex; flex-direction: column; gap: 10px; }
+      .bubble {
+        max-width: min(760px, 88%);
+        border-radius: 12px;
+        padding: 10px 12px;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .bubble.user { margin-left: auto; background: #1d4ed8; }
+      .bubble.assistant { margin-right: auto; background: #1f2937; border: 1px solid #374151; }
+      .failure-actions { display: none; gap: 10px; margin-top: 10px; }
+      .composer {
+        border-top: 1px solid var(--line);
+        padding: 12px 16px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        background: rgba(17,24,39,.9);
+      }
+      button {
+        border: 1px solid #334155;
+        border-radius: 10px;
+        background: #1e293b;
+        color: var(--text);
+        padding: 8px 12px;
+        cursor: pointer;
+      }
+      button:hover { background: #273549; }
+      textarea {
+        flex: 1;
+        resize: none;
+        min-height: 42px;
+        max-height: 140px;
+        background: #0b1220;
+        border: 1px solid #243041;
+        border-radius: 10px;
+        color: var(--text);
+        padding: 10px 12px;
+        font-family: inherit;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <header class="top">
+        <div class="left-actions">
+          <button id="btn-new">새 채팅 (+)</button>
+          <button id="btn-toggle">세션 목록 토글</button>
+          <button id="btn-delete">세션 삭제</button>
+        </div>
+        <div id="status-badge" class="status fail">연결 실패</div>
+      </header>
+
+      <div class="main" id="main-layout">
+        <aside class="sessions" id="sessions"></aside>
+        <section class="chat" id="chat">
+          <div class="guide">
+            Analyzer Phase 4: 첨부 즉시 자동 로드 + Dataset Registry
+            <div class="active-dataset" id="active-dataset">Active: 없음</div>
+            <div class="dataset-list" id="dataset-list"></div>
+            <div class="failure-actions" id="failure-actions">
+              <button id="btn-install">Install/Build Engine</button>
+              <button id="btn-download">Download Model</button>
+            </div>
+          </div>
+          <div class="messages" id="messages"></div>
+        </section>
+      </div>
+
+      <footer class="composer">
+        <button id="btn-attach" title="파일 첨부">📎</button>
+        <textarea id="input" placeholder="메시지를 입력하세요. Enter 전송 / Shift+Enter 줄바꿈"></textarea>
+      </footer>
+    </div>
+
+    <script>
+      const state = {
+        connectionOk: false,
+        sessions: [],
+        currentSessionId: null,
+        messages: [],
+        sessionsVisible: true,
+        datasets: [],
+        activeDataset: null,
+      };
+
+      function $(id) { return document.getElementById(id); }
+      function toast(msg) { alert(msg || 'not implemented yet'); }
+
+      function renderStatus() {
+        const badge = $('status-badge');
+        badge.textContent = state.connectionOk ? '연결 성공' : '연결 실패';
+        badge.className = `status ${state.connectionOk ? 'ok' : 'fail'}`;
+        $('failure-actions').style.display = state.connectionOk ? 'none' : 'flex';
+      }
+
+      function renderSessions() {
+        const root = $('sessions');
+        root.innerHTML = '';
+        if (state.sessions.length === 0) {
+          const empty = document.createElement('div');
+          empty.className = 'session-meta';
+          empty.textContent = '세션이 없습니다. 새 채팅을 시작하세요.';
+          root.appendChild(empty);
+          return;
+        }
+
+        state.sessions.forEach((s) => {
+          const btn = document.createElement('button');
+          btn.className = `session-item ${s.session_id === state.currentSessionId ? 'active' : ''}`;
+          btn.innerHTML = `<div>${escapeHtml(s.title)}</div><div class="session-meta">메시지 ${s.message_count}</div>`;
+          btn.onclick = async () => {
+            const data = await window.pywebview.api.switch_session(s.session_id);
+            applyState(data);
+          };
+          root.appendChild(btn);
+        });
+      }
+
+      function renderMessages() {
+        const root = $('messages');
+        root.innerHTML = '';
+        state.messages.forEach((m) => {
+          const bubble = document.createElement('div');
+          bubble.className = `bubble ${m.role === 'user' ? 'user' : 'assistant'}`;
+          bubble.textContent = m.text || '';
+          root.appendChild(bubble);
+        });
+      }
+
+      function renderDatasets() {
+        const active = state.activeDataset;
+        const activeLabel = active
+          ? `Active: ${active.name} (${active.row_count}행 x ${active.col_count}열)`
+          : 'Active: 없음';
+        $('active-dataset').textContent = activeLabel;
+
+        const list = $('dataset-list');
+        list.innerHTML = '';
+        state.datasets.forEach((d) => {
+          const chip = document.createElement('button');
+          chip.className = `dataset-chip ${active && active.dataset_id === d.dataset_id ? 'active' : ''}`;
+          chip.textContent = d.name;
+          chip.title = d.notes || '';
+          chip.onclick = async () => {
+            const data = await window.pywebview.api.set_active_dataset(d.dataset_id);
+            applyState(data);
+          };
+          list.appendChild(chip);
+        });
+      }
+
+      function renderSessionPanelVisibility() {
+        const panel = $('sessions');
+        const main = $('main-layout');
+        if (state.sessionsVisible) {
+          panel.classList.remove('hidden');
+          main.style.gridTemplateColumns = '260px 1fr';
+        } else {
+          panel.classList.add('hidden');
+          main.style.gridTemplateColumns = '1fr';
+        }
+      }
+
+      function applyState(data) {
+        state.sessions = data.sessions || [];
+        state.currentSessionId = data.current_session_id || null;
+        state.messages = data.messages || [];
+        state.datasets = data.datasets || [];
+        state.activeDataset = data.active_dataset || null;
+        renderSessions();
+        renderMessages();
+        renderDatasets();
+      }
+
+      function escapeHtml(str) {
+        return (str || '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+      }
+
+      async function init() {
+        const data = await window.pywebview.api.get_initial_state();
+        state.connectionOk = !!data.connection_ok;
+        applyState(data);
+        renderStatus();
+        renderSessionPanelVisibility();
+      }
+
+      $('btn-new').onclick = async () => applyState(await window.pywebview.api.new_session());
+      $('btn-toggle').onclick = () => { state.sessionsVisible = !state.sessionsVisible; renderSessionPanelVisibility(); };
+      $('btn-delete').onclick = async () => {
+        if (!state.currentSessionId) return;
+        applyState(await window.pywebview.api.delete_session(state.currentSessionId));
+      };
+      $('btn-attach').onclick = async () => applyState(await window.pywebview.api.attach_files());
+
+      $('btn-install').onclick = async () => toast(await window.pywebview.api.install_build_engine());
+      $('btn-download').onclick = async () => toast(await window.pywebview.api.download_model());
+
+      $('input').addEventListener('keydown', async (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          const text = $('input').value.trim();
+          if (!text) return;
+          const data = await window.pywebview.api.send_message(text);
+          $('input').value = '';
+          applyState(data);
+        }
+      });
+
+      window.addEventListener('pywebviewready', init);
+    </script>
+  </body>
+</html>
