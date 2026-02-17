@@ -30,13 +30,31 @@ class DatasetRegistry:
         self._frames: dict[str, pd.DataFrame] = {}
         self._active_dataset_id: str | None = None
 
+    def clear(self) -> None:
+        self._datasets.clear()
+        self._frames.clear()
+        self._active_dataset_id = None
+
+    def _build_meta_from_loaded(self, p: Path, kind: str, df: pd.DataFrame, meta: dict[str, Any]) -> DatasetMeta:
+        return DatasetMeta(
+            dataset_id=str(uuid4()),
+            path=str(p),
+            name=p.name,
+            kind=kind,
+            loaded_ok=True,
+            row_count=int(df.shape[0]),
+            col_count=int(df.shape[1]),
+            sheet_name=meta.get("sheet_name"),
+            encoding=meta.get("encoding"),
+            notes=meta.get("notes"),
+        )
+
     def register_files(self, file_paths: list[str]) -> list[DatasetMeta]:
         results: list[DatasetMeta] = []
 
         for raw_path in file_paths:
             p = Path(raw_path)
             kind = "xlsx" if p.suffix.lower() in {".xlsx", ".xlsm", ".xltx", ".xltm"} else "csv"
-            dataset_id = str(uuid4())
 
             try:
                 if kind == "xlsx":
@@ -44,22 +62,11 @@ class DatasetRegistry:
                 else:
                     df, meta = load_csv(str(p))
 
-                dataset = DatasetMeta(
-                    dataset_id=dataset_id,
-                    path=str(p),
-                    name=p.name,
-                    kind=kind,
-                    loaded_ok=True,
-                    row_count=int(df.shape[0]),
-                    col_count=int(df.shape[1]),
-                    sheet_name=meta.get("sheet_name"),
-                    encoding=meta.get("encoding"),
-                    notes=meta.get("notes"),
-                )
-                self._frames[dataset_id] = df
+                dataset = self._build_meta_from_loaded(p, kind, df, meta)
+                self._frames[dataset.dataset_id] = df
             except Exception as exc:  # noqa: BLE001
                 dataset = DatasetMeta(
-                    dataset_id=dataset_id,
+                    dataset_id=str(uuid4()),
                     path=str(p),
                     name=p.name,
                     kind=kind,
@@ -73,11 +80,16 @@ class DatasetRegistry:
                     ),
                 )
 
-            self._datasets[dataset_id] = dataset
-            self._active_dataset_id = dataset_id
+            self._datasets[dataset.dataset_id] = dataset
+            self._active_dataset_id = dataset.dataset_id
             results.append(dataset)
 
         return results
+
+    def add_dataset_meta(self, dataset: DatasetMeta, make_active: bool = False) -> None:
+        self._datasets[dataset.dataset_id] = dataset
+        if make_active:
+            self._active_dataset_id = dataset.dataset_id
 
     def set_active(self, dataset_id: str) -> DatasetMeta | None:
         if dataset_id not in self._datasets:

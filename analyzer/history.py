@@ -34,11 +34,12 @@ def append_event(event: dict[str, Any]) -> None:
 
 
 def _default_session(session_id: str, created_at: str | None = None, title: str | None = None) -> dict[str, Any]:
+    now = _utc_now_iso()
     return {
         "session_id": session_id,
         "title": title or "새 채팅",
-        "created_at": created_at or _utc_now_iso(),
-        "last_updated_at": created_at or _utc_now_iso(),
+        "created_at": created_at or now,
+        "last_updated_at": created_at or now,
         "deleted": False,
         "messages": [],
         "files": [],
@@ -122,4 +123,5 @@ def load_sessions() -> dict[str, Any]:
             for s in visible_sessions
         ],
         "messages_by_session": {s["session_id"]: s.get("messages", []) for s in visible_sessions},
+        "files_by_session": {s["session_id"]: s.get("files", []) for s in visible_sessions},
     }
