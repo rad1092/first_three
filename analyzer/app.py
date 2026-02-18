@@ -9,7 +9,9 @@ from uuid import uuid4
 import webview
 
 from .backend import check_bitnetd_health
+from .cards import render_cards_to_html
 from .datasets import DatasetMeta, DatasetRegistry
+from .executor import execute_actions
 from .history import append_event, ensure_history_file, load_sessions
 from .router import route
 
@@ -85,6 +87,20 @@ class AnalyzerApi:
             }
         )
 
+    def _session_runtime_state(self) -> dict:
+        assert self.current_session_id is not None
+        ui_state = self._state()
+        st = self._state_for(self.current_session_id)
+        return {
+            "datasets": ui_state.get("datasets", []),
+            "active_dataset": ui_state.get("active_dataset"),
+            "registry": st.registry,
+        }
+
+    def _execute_and_append(self, actions: list[dict]) -> None:
+        cards = execute_actions(actions, self._session_runtime_state())
+        self._append_assistant(render_cards_to_html(cards))
+
     def _state_for(self, session_id: str) -> SessionDatasetState:
         return self._session_states.setdefault(session_id, SessionDatasetState(session_id=session_id))
 
@@ -118,6 +134,7 @@ class AnalyzerApi:
                 "question": pending.get("question"),
                 "candidates": pending.get("candidates", []),
                 "context": pending.get("context", {}),
+                "intent": pending.get("intent"),
                 "stage": pending.get("stage", "initial"),
                 "created_at": _utc_now_iso(),
             }
@@ -232,7 +249,7 @@ class AnalyzerApi:
             columns = []
 
         action = {
-            "intent": context.get("intent", "summary"),
+            "intent": context.get("intent") or pending.get("intent") or "summary",
             "targets": {
                 "datasets": [context.get("dataset_id")] if context.get("dataset_id") else [],
                 "sheets": [],
@@ -251,7 +268,7 @@ class AnalyzerApi:
             }
         )
         self._clear_pending()
-        self._append_assistant("타겟 확정됨: " + candidate.get("label", "") + "\n" + _router_actions_to_text([action]))
+        self._execute_and_append([action])
 
     def get_initial_state(self) -> dict:
         ok, status_text = check_bitnetd_health()
@@ -452,6 +469,7 @@ class AnalyzerApi:
                 if a0.get("needs_clarification"):
                     clarify = a0.get("clarify")
                     pending2 = {
+                        "intent": a0.get("intent"),
                         "kind": clarify.get("kind"),
                         "question": clarify.get("question"),
                         "candidates": clarify.get("candidates", []),
@@ -463,7 +481,7 @@ class AnalyzerApi:
                     self._append_assistant(pending2["question"] + "\n" + "\n".join(labels) + "\n(아니면 '아니다')")
                     return self._state()
                 self._clear_pending()
-                self._append_assistant(_router_actions_to_text(actions))
+                self._execute_and_append(actions)
                 return self._state()
 
             self._append_assistant(
@@ -478,6 +496,7 @@ class AnalyzerApi:
         if first.get("needs_clarification"):
             clarify = first.get("clarify") or {}
             pending_new = {
+                "intent": first.get("intent"),
                 "kind": clarify.get("kind", "column"),
                 "question": clarify.get("question", "대상을 선택해 주세요."),
                 "candidates": clarify.get("candidates", []),
@@ -489,7 +508,7 @@ class AnalyzerApi:
             self._append_assistant(pending_new["question"] + "\n" + "\n".join(labels) + "\n1/2/3으로 선택하거나 '아니다'라고 입력해 주세요.")
             return self._state()
 
-        self._append_assistant(_router_actions_to_text(actions))
+        self._execute_and_append(actions)
         return self._state()
 
     def install_build_engine(self) -> str:

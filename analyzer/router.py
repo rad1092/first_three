@@ -28,7 +28,7 @@ INTENT_KEYWORDS: dict[str, list[str]] = {
     "plot": ["그래프", "시각화", "plot", "차트"],
     "export": ["저장", "내보내기", "export", "다운로드"],
     "help": ["도움", "help", "어떻게"],
-    "columns": ["컬럼", "열", "column", "columns"],
+    "columns": ["컬럼", "column", "columns"],
     "preview": ["미리보기", "preview", "샘플", "상위"],
     "validate": ["검증", "결측", "이상치", "validate", "missing"],
 }
@@ -92,7 +92,7 @@ def _is_column_ambiguous(ranked: list[tuple[str, float]], intent: str) -> bool:
         return False
     top1 = ranked[0][1]
     top2 = ranked[1][1]
-    if intent in {"validate", "aggregate", "filter", "columns"} and top2 >= 0.5:
+    if intent in {"validate", "aggregate", "filter"} and top2 >= 0.5:
         return True
     return top1 < 0.80 or (top1 - top2) < 0.12
 
@@ -108,8 +108,9 @@ def route(text: str, session_state: dict[str, Any]) -> list[dict[str, Any]]:
     needs_clarification = False
     clarify = None
     selected_columns: list[str] = []
+    requires_column_target = intent in {"validate", "filter", "aggregate"}
 
-    if strong:
+    if requires_column_target and strong:
         selected_columns = [strong[0][0]]
         if _is_column_ambiguous(strong, intent):
             needs_clarification = True
@@ -130,7 +131,7 @@ def route(text: str, session_state: dict[str, Any]) -> list[dict[str, Any]]:
                 },
             }
             selected_columns = [c["id"] for c in clarify["candidates"]]
-    elif all_columns:
+    elif requires_column_target and all_columns:
         needs_clarification = True
         clarify = {
             "kind": "column",

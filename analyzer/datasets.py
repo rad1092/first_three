@@ -111,6 +111,9 @@ class DatasetRegistry:
     def get_dataset(self, dataset_id: str) -> DatasetMeta | None:
         return self._datasets.get(dataset_id)
 
+    def get_frame(self, dataset_id: str) -> pd.DataFrame | None:
+        return self._frames.get(dataset_id)
+
     def as_state(self) -> dict[str, Any]:
         active = self.get_active()
         return {

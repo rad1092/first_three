@@ -110,6 +110,7 @@ def load_sessions() -> dict[str, Any]:
                 session["last_updated_at"] = event.get("created_at") or session["last_updated_at"]
             elif event_type == "clarification_requested":
                 pending_by_session[session_id] = {
+                    "intent": event.get("intent"),
                     "kind": event.get("kind"),
                     "question": event.get("question"),
                     "candidates": event.get("candidates", []),

@@ -116,6 +116,14 @@
       }
       .bubble.user { margin-left: auto; background: #1d4ed8; }
       .bubble.assistant { margin-right: auto; background: #1f2937; border: 1px solid #374151; }
+
+      .result-cards { display: flex; flex-direction: column; gap: 10px; }
+      .result-card { border: 1px solid #334155; border-radius: 10px; padding: 10px; background: #0f172a; }
+      .result-card-title { font-weight: 700; margin-bottom: 8px; color: #dbeafe; }
+      .result-text { white-space: pre-wrap; }
+      .result-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+      .result-table th, .result-table td { border: 1px solid #334155; padding: 6px 8px; text-align: left; vertical-align: top; }
+      .result-table th { background: #1e293b; }
       .failure-actions { display: none; gap: 10px; margin-top: 10px; }
       .composer {
         border-top: 1px solid var(--line);
@@ -231,7 +239,12 @@
         state.messages.forEach((m) => {
           const bubble = document.createElement('div');
           bubble.className = `bubble ${m.role === 'user' ? 'user' : 'assistant'}`;
-          bubble.textContent = m.text || '';
+          const text = m.text || '';
+          if (m.role === 'assistant' && /<[^>]+>/.test(text)) {
+            bubble.innerHTML = text;
+          } else {
+            bubble.textContent = text;
+          }
           root.appendChild(bubble);
         });
       }
