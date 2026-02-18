@@ -99,6 +99,21 @@ def load_sessions() -> dict[str, Any]:
                 if isinstance(files, list):
                     session["files"].extend(files)
                 session["last_updated_at"] = event.get("created_at") or session["last_updated_at"]
+            elif event_type == "files_detached":
+                detached_dataset_id = event.get("dataset_id")
+                detached_path = event.get("path")
+                detached_name = event.get("name")
+                next_files = []
+                for f in session.get("files", []):
+                    if detached_dataset_id and f.get("dataset_id") == detached_dataset_id:
+                        continue
+                    if detached_path and f.get("path") == detached_path:
+                        continue
+                    if detached_name and f.get("name") == detached_name and not detached_path:
+                        continue
+                    next_files.append(f)
+                session["files"] = next_files
+                session["last_updated_at"] = event.get("detached_at") or session["last_updated_at"]
             elif event_type == "session_deleted":
                 session["deleted"] = True
                 session["deleted_at"] = event.get("deleted_at") or _utc_now_iso()

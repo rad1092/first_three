@@ -112,7 +112,7 @@ class AnalyzerApi:
 
         for sid, files in files_by_session.items():
             st = self._state_for(sid)
-            signature = tuple(f"{f.get('path','')}|{f.get('size_bytes',0)}" for f in files)
+            signature = tuple(f"{f.get('dataset_id','')}|{f.get('path','')}|{f.get('size_bytes',0)}" for f in files)
             if signature != st.file_signature:
                 st.attached_files = files
                 st.file_signature = signature
@@ -365,10 +365,10 @@ class AnalyzerApi:
                 size = p.stat().st_size
             except OSError:
                 size = 0
-            files_event.append({"path": m.path, "name": m.name, "size_bytes": size})
+            files_event.append({"dataset_id": m.dataset_id, "path": m.path, "name": m.name, "size_bytes": size})
 
         st.attached_files.extend(files_event)
-        st.file_signature = tuple(f"{f.get('path','')}|{f.get('size_bytes',0)}" for f in st.attached_files)
+        st.file_signature = tuple(f"{f.get('dataset_id','')}|{f.get('path','')}|{f.get('size_bytes',0)}" for f in st.attached_files)
         st.hydrated = True
         if metas:
             st.active_dataset_id = metas[-1].dataset_id
@@ -383,6 +383,38 @@ class AnalyzerApi:
             }
         )
         self._append_assistant(_dataset_summary_lines(metas))
+        return self._state()
+
+    def detach_dataset(self, dataset_id: str) -> dict:
+        self._ensure_session()
+        assert self.current_session_id is not None
+
+        st = self._state_for(self.current_session_id)
+        meta = st.registry.get_dataset(dataset_id)
+        if not meta:
+            return self._state()
+
+        st.registry.remove_dataset(dataset_id)
+        st.attached_files = [f for f in st.attached_files if f.get("dataset_id") != dataset_id and f.get("path") != meta.path]
+        st.file_signature = tuple(
+            f"{f.get('dataset_id','')}|{f.get('path','')}|{f.get('size_bytes',0)}" for f in st.attached_files
+        )
+        st.hydrated = True
+
+        active = st.registry.get_active()
+        st.active_dataset_id = active.dataset_id if active else None
+
+        append_event(
+            {
+                "type": "files_detached",
+                "session_id": self.current_session_id,
+                "dataset_id": dataset_id,
+                "path": meta.path,
+                "name": meta.name,
+                "detached_at": _utc_now_iso(),
+            }
+        )
+        self._append_assistant(f"세션에서 첨부 제거: {meta.name}")
         return self._state()
 
     def send_message(self, text: str) -> dict:

@@ -111,6 +111,16 @@ class DatasetRegistry:
     def get_dataset(self, dataset_id: str) -> DatasetMeta | None:
         return self._datasets.get(dataset_id)
 
+
+    def remove_dataset(self, dataset_id: str) -> DatasetMeta | None:
+        removed = self._datasets.pop(dataset_id, None)
+        self._frames.pop(dataset_id, None)
+        if self._active_dataset_id == dataset_id:
+            self._active_dataset_id = None
+            if self._datasets:
+                self._active_dataset_id = next(reversed(self._datasets.keys()))
+        return removed
+
     def get_frame(self, dataset_id: str) -> pd.DataFrame | None:
         return self._frames.get(dataset_id)
 

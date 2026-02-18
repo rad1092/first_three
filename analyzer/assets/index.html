@@ -98,9 +98,38 @@
         background: #162234;
         color: #cbd5e1;
         border-radius: 999px;
-        padding: 4px 10px;
+        padding: 2px 4px 2px 10px;
         font-size: 12px;
-        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .dataset-chip-main {
+        border: 0;
+        background: transparent;
+        color: inherit;
+        padding: 2px 0;
+      }
+      .dataset-chip-remove {
+        border: 0;
+        background: #334155;
+        color: #fff;
+        border-radius: 999px;
+        width: 20px;
+        height: 20px;
+        padding: 0;
+        line-height: 1;
+      }
+      .card-copy-btn {
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        border: 1px solid #475569;
+        background: #1e293b;
+        color: #dbeafe;
+        border-radius: 6px;
+        padding: 2px 8px;
+        font-size: 12px;
       }
       .dataset-chip.active {
         border-color: #60a5fa;
@@ -113,16 +142,17 @@
         padding: 10px 12px;
         white-space: pre-wrap;
         word-break: break-word;
+        user-select: text;
       }
       .bubble.user { margin-left: auto; background: #1d4ed8; }
       .bubble.assistant { margin-right: auto; background: #1f2937; border: 1px solid #374151; }
 
       .result-cards { display: flex; flex-direction: column; gap: 10px; }
-      .result-card { border: 1px solid #334155; border-radius: 10px; padding: 10px; background: #0f172a; }
+      .result-card { border: 1px solid #334155; border-radius: 10px; padding: 10px; background: #0f172a; position: relative; user-select: text; }
       .result-card-title { font-weight: 700; margin-bottom: 8px; color: #dbeafe; }
       .result-text { white-space: pre-wrap; }
       .result-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-      .result-table th, .result-table td { border: 1px solid #334155; padding: 6px 8px; text-align: left; vertical-align: top; }
+      .result-table th, .result-table td { border: 1px solid #334155; padding: 6px 8px; text-align: left; vertical-align: top; user-select: text; }
       .result-table th { background: #1e293b; }
       .failure-actions { display: none; gap: 10px; margin-top: 10px; }
       .composer {
@@ -186,6 +216,7 @@
       <footer class="composer">
         <button id="btn-attach" title="파일 첨부">📎</button>
         <textarea id="input" placeholder="메시지를 입력하세요. Enter 전송 / Shift+Enter 줄바꿈"></textarea>
+        <button id="btn-send" title="전송">▶</button>
       </footer>
     </div>
 
@@ -233,6 +264,46 @@
         });
       }
 
+      function tableToTsv(table) {
+        const rows = [...table.querySelectorAll('tr')];
+        return rows
+          .map((row) =>
+            [...row.querySelectorAll('th,td')]
+              .map((c) => (c.innerText || '').replaceAll('	', ' '))
+              .join('	')
+          )
+          .join('
+');
+      }
+
+      async function copyText(text) {
+        try {
+          await navigator.clipboard.writeText(text || '');
+          toast('복사됨');
+        } catch {
+          toast('클립보드 복사 실패');
+        }
+      }
+
+      function decorateCards(bubble) {
+        bubble.querySelectorAll('.result-card').forEach((card) => {
+          const btn = document.createElement('button');
+          btn.className = 'card-copy-btn';
+          btn.textContent = 'Copy';
+          btn.onclick = async (e) => {
+            e.stopPropagation();
+            const table = card.querySelector('table');
+            if (table) {
+              await copyText(tableToTsv(table));
+              return;
+            }
+            const text = (card.querySelector('.result-text') || card).innerText || '';
+            await copyText(text);
+          };
+          card.appendChild(btn);
+        });
+      }
+
       function renderMessages() {
         const root = $('messages');
         root.innerHTML = '';
@@ -242,6 +313,7 @@
           const text = m.text || '';
           if (m.role === 'assistant' && /<[^>]+>/.test(text)) {
             bubble.innerHTML = text;
+            decorateCards(bubble);
           } else {
             bubble.textContent = text;
           }
@@ -259,14 +331,30 @@
         const list = $('dataset-list');
         list.innerHTML = '';
         state.datasets.forEach((d) => {
-          const chip = document.createElement('button');
+          const chip = document.createElement('div');
           chip.className = `dataset-chip ${active && active.dataset_id === d.dataset_id ? 'active' : ''}`;
-          chip.textContent = d.name;
-          chip.title = d.notes || '';
-          chip.onclick = async () => {
+
+          const mainBtn = document.createElement('button');
+          mainBtn.className = 'dataset-chip-main';
+          mainBtn.textContent = d.name;
+          mainBtn.title = d.notes || '';
+          mainBtn.onclick = async () => {
             const data = await window.pywebview.api.set_active_dataset(d.dataset_id);
             applyState(data);
           };
+
+          const removeBtn = document.createElement('button');
+          removeBtn.className = 'dataset-chip-remove';
+          removeBtn.textContent = '✕';
+          removeBtn.title = '세션에서 제거';
+          removeBtn.onclick = async (e) => {
+            e.stopPropagation();
+            const data = await window.pywebview.api.detach_dataset(d.dataset_id);
+            applyState(data);
+          };
+
+          chip.appendChild(mainBtn);
+          chip.appendChild(removeBtn);
           list.appendChild(chip);
         });
       }
@@ -294,6 +382,15 @@
         renderDatasets();
       }
 
+
+      async function sendInputMessage() {
+        const text = $('input').value.trim();
+        if (!text) return;
+        const data = await window.pywebview.api.send_message(text);
+        $('input').value = '';
+        applyState(data);
+      }
+
       function escapeHtml(str) {
         return (str || '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
       }
@@ -313,6 +410,7 @@
         applyState(await window.pywebview.api.delete_session(state.currentSessionId));
       };
       $('btn-attach').onclick = async () => applyState(await window.pywebview.api.attach_files());
+      $('btn-send').onclick = async () => { await sendInputMessage(); };
 
       $('btn-install').onclick = async () => toast(await window.pywebview.api.install_build_engine());
       $('btn-download').onclick = async () => toast(await window.pywebview.api.download_model());
@@ -320,11 +418,7 @@
       $('input').addEventListener('keydown', async (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
           e.preventDefault();
-          const text = $('input').value.trim();
-          if (!text) return;
-          const data = await window.pywebview.api.send_message(text);
-          $('input').value = '';
-          applyState(data);
+          await sendInputMessage();
         }
       });
 
