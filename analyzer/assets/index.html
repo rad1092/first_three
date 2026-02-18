@@ -468,8 +468,9 @@
         }
       });
 
-      window.addEventListener('pywebviewready', init);
+      window.addEventListener('pywebviewready', initWhenReady);
       window.addEventListener('DOMContentLoaded', initWhenReady);
+      initWhenReady();
     </script>
   </body>
 </html>
