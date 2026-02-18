@@ -294,6 +294,13 @@ class AnalyzerApi:
     def list_sessions(self) -> dict:
         return self._state()
 
+    def get_connection_status(self) -> dict:
+        ok, status_text = check_bitnetd_health()
+        return {
+            "connection_ok": ok,
+            "connection_text": status_text,
+        }
+
     def switch_session(self, session_id: str) -> dict:
         self.current_session_id = session_id
         return self._state()

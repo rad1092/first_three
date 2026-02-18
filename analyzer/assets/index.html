@@ -223,6 +223,7 @@
     <script>
       const state = {
         connectionOk: false,
+        connectionText: '연결 실패',
         sessions: [],
         currentSessionId: null,
         messages: [],
@@ -236,9 +237,12 @@
 
       function renderStatus() {
         const badge = $('status-badge');
-        badge.textContent = state.connectionOk ? '연결 성공' : '연결 실패';
-        badge.className = `status ${state.connectionOk ? 'ok' : 'fail'}`;
-        $('failure-actions').style.display = state.connectionOk ? 'none' : 'flex';
+        const text = (state.connectionText || '').trim();
+        const okByText = text === '연결 성공';
+        const ok = typeof state.connectionOk === 'boolean' ? state.connectionOk : okByText;
+        badge.textContent = ok ? '연결 성공' : '연결 실패';
+        badge.className = `status ${ok ? 'ok' : 'fail'}`;
+        $('failure-actions').style.display = ok ? 'none' : 'flex';
       }
 
       function renderSessions() {
@@ -372,14 +376,24 @@
       }
 
       function applyState(data) {
-        state.sessions = data.sessions || [];
-        state.currentSessionId = data.current_session_id || null;
-        state.messages = data.messages || [];
-        state.datasets = data.datasets || [];
-        state.activeDataset = data.active_dataset || null;
+        const hasConnectionOk = Object.prototype.hasOwnProperty.call(data || {}, 'connection_ok');
+        const connectionText = (data && (data.connection_text || data.connection_status_text)) || state.connectionText || '연결 실패';
+        state.connectionText = connectionText;
+        if (hasConnectionOk) {
+          state.connectionOk = !!data.connection_ok;
+        } else {
+          state.connectionOk = connectionText === '연결 성공';
+        }
+
+        if (Object.prototype.hasOwnProperty.call(data || {}, 'sessions')) state.sessions = data.sessions || [];
+        if (Object.prototype.hasOwnProperty.call(data || {}, 'current_session_id')) state.currentSessionId = data.current_session_id || null;
+        if (Object.prototype.hasOwnProperty.call(data || {}, 'messages')) state.messages = data.messages || [];
+        if (Object.prototype.hasOwnProperty.call(data || {}, 'datasets')) state.datasets = data.datasets || [];
+        if (Object.prototype.hasOwnProperty.call(data || {}, 'active_dataset')) state.activeDataset = data.active_dataset || null;
         renderSessions();
         renderMessages();
         renderDatasets();
+        renderStatus();
       }
 
 
@@ -395,12 +409,21 @@
         return (str || '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
       }
 
+
+      async function pollConnectionStatus() {
+        try {
+          const data = await window.pywebview.api.get_connection_status();
+          applyState(data || {});
+        } catch {
+          // polling 실패는 UX를 막지 않는다
+        }
+      }
+
       async function init() {
         const data = await window.pywebview.api.get_initial_state();
-        state.connectionOk = !!data.connection_ok;
-        applyState(data);
-        renderStatus();
+        applyState(data || {});
         renderSessionPanelVisibility();
+        setInterval(pollConnectionStatus, 3000);
       }
 
       $('btn-new').onclick = async () => applyState(await window.pywebview.api.new_session());
