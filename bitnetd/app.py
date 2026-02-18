@@ -35,7 +35,7 @@ DEFAULT_GENERATE_OPTIONS = {
     "timeout_ms": 60_000,
 }
 
-app = FastAPI(title="bitnetd", version="0.2.0-phase8")
+app = FastAPI(title="bitnetd", version="0.2.0-phase8-2")
 state = ServerState()
 model_service = BitNetModelService()
 _prune_task: asyncio.Task[None] | None = None
