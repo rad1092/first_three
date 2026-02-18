@@ -236,6 +236,8 @@
       let initInProgress = false;
       let initDone = false;
       let pollTimerId = null;
+      let pollInFlight = false;
+      let currentPollMs = 3000;
 
       function $(id) { return document.getElementById(id); }
       function toast(msg) { alert(msg || 'not implemented yet'); }
@@ -399,6 +401,7 @@
       }
 
       function applyState(data) {
+        const prevConnectionOk = !!state.connectionOk;
         const hasConnectionOk = Object.prototype.hasOwnProperty.call(data || {}, 'connection_ok');
         const connectionText = (data && (data.connection_text || data.connection_status_text)) || state.connectionText || '연결 실패';
         state.connectionText = connectionText;
@@ -406,6 +409,9 @@
           state.connectionOk = !!data.connection_ok;
         } else {
           state.connectionOk = connectionText === '연결 성공';
+        }
+        if (prevConnectionOk !== state.connectionOk) {
+          startPolling(state.connectionOk ? 10000 : 3000);
         }
 
         if (Object.prototype.hasOwnProperty.call(data || {}, 'sessions')) state.sessions = data.sessions || [];
@@ -434,7 +440,22 @@
       }
 
 
+      function startPolling(ms) {
+        const nextMs = Number(ms) || 3000;
+        if (pollTimerId && currentPollMs === nextMs) return;
+        if (pollTimerId) {
+          clearInterval(pollTimerId);
+          pollTimerId = null;
+        }
+        currentPollMs = nextMs;
+        pollTimerId = setInterval(pollConnectionStatus, currentPollMs);
+      }
+
+
+
       async function pollConnectionStatus() {
+        if (pollInFlight) return;
+        pollInFlight = true;
         try {
           if (!backendReady(false)) return;
           const data = await callApi('get_connection_status');
@@ -442,6 +463,8 @@
           applyState(data || {});
         } catch {
           // polling 실패는 UX를 막지 않는다
+        } finally {
+          pollInFlight = false;
         }
       }
 
@@ -459,9 +482,7 @@
           // initDone=false 유지 -> 재시도 루프에서 다시 시도
         } finally {
           initInProgress = false;
-          if (!pollTimerId) {
-            pollTimerId = setInterval(pollConnectionStatus, 3000);
-          }
+          startPolling(state.connectionOk ? 10000 : 3000);
         }
       }
 
@@ -495,6 +516,12 @@
 
       window.addEventListener('pywebviewready', initWhenReady);
       window.addEventListener('DOMContentLoaded', initWhenReady);
+      window.addEventListener('beforeunload', () => {
+        if (pollTimerId) {
+          clearInterval(pollTimerId);
+          pollTimerId = null;
+        }
+      });
       initWhenReady();
     </script>
   </body>
