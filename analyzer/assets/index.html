@@ -233,7 +233,8 @@
       };
 
 
-      let initStarted = false;
+      let initInProgress = false;
+      let initDone = false;
       let pollTimerId = null;
 
       function $(id) { return document.getElementById(id); }
@@ -424,27 +425,28 @@
       }
 
       async function init() {
-        if (initStarted) return;
-        initStarted = true;
+        if (initDone || initInProgress) return;
+        initInProgress = true;
 
         try {
           const data = await window.pywebview.api.get_initial_state();
           applyState(data || {});
+          renderSessionPanelVisibility();
+          initDone = true;
         } catch {
-          // init 실패해도 polling으로 회복 시도
-        }
-
-        renderSessionPanelVisibility();
-        if (!pollTimerId) {
-          pollTimerId = setInterval(pollConnectionStatus, 3000);
+          // initDone=false 유지 -> 재시도 루프에서 다시 시도
+        } finally {
+          initInProgress = false;
+          if (!pollTimerId) {
+            pollTimerId = setInterval(pollConnectionStatus, 3000);
+          }
         }
       }
 
       function initWhenReady() {
-        if (initStarted) return;
+        if (initDone) return;
         if (window.pywebview && window.pywebview.api) {
           init();
-          return;
         }
         setTimeout(initWhenReady, 50);
       }
