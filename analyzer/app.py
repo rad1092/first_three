@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -573,23 +574,22 @@ class AnalyzerApi:
         return "not implemented yet"
 
 
-def _render_html() -> str:
-    assets_dir = Path(__file__).parent / "assets"
-    return (assets_dir / "index.html").read_text(encoding="utf-8")
+def _assets_index_uri() -> str:
+    return (Path(__file__).parent / "assets" / "index.html").resolve().as_uri()
 
 
 def run_app() -> None:
-    html = _render_html()
-
     api = AnalyzerApi()
     webview.create_window(
         "Analyzer",
-        html=html,
+        url=_assets_index_uri(),
         js_api=api,
         width=1180,
         height=760,
+        http_server=True,
     )
-    webview.start(debug=False)
+    debug = os.getenv("ANALYZER_WEBVIEW_DEBUG", "0") == "1"
+    webview.start(debug=debug)
 
 
 if __name__ == "__main__":

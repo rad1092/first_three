@@ -240,6 +240,22 @@
       function $(id) { return document.getElementById(id); }
       function toast(msg) { alert(msg || 'not implemented yet'); }
 
+      function backendReady(showToast = true) {
+        const ok = !!(window.pywebview && window.pywebview.api);
+        if (!ok && showToast) toast('백엔드 준비 중');
+        return ok;
+      }
+
+      async function callApi(method, ...args) {
+        if (!backendReady(true)) return null;
+        const fn = window.pywebview.api && window.pywebview.api[method];
+        if (typeof fn !== 'function') {
+          toast('백엔드 준비 중');
+          return null;
+        }
+        return await fn(...args);
+      }
+
       function renderStatus() {
         const badge = $('status-badge');
         const text = (state.connectionText || '').trim();
@@ -266,7 +282,8 @@
           btn.className = `session-item ${s.session_id === state.currentSessionId ? 'active' : ''}`;
           btn.innerHTML = `<div>${escapeHtml(s.title)}</div><div class="session-meta">메시지 ${s.message_count}</div>`;
           btn.onclick = async () => {
-            const data = await window.pywebview.api.switch_session(s.session_id);
+            const data = await callApi('switch_session', s.session_id);
+            if (!data) return;
             applyState(data);
           };
           root.appendChild(btn);
@@ -278,11 +295,10 @@
         return rows
           .map((row) =>
             [...row.querySelectorAll('th,td')]
-              .map((c) => (c.innerText || '').replaceAll('	', ' '))
-              .join('	')
+              .map((c) => (c.innerText || '').replaceAll('\t', ' '))
+              .join('\t')
           )
-          .join('
-');
+          .join('\n');
       }
 
       async function copyText(text) {
@@ -348,7 +364,8 @@
           mainBtn.textContent = d.name;
           mainBtn.title = d.notes || '';
           mainBtn.onclick = async () => {
-            const data = await window.pywebview.api.set_active_dataset(d.dataset_id);
+            const data = await callApi('set_active_dataset', d.dataset_id);
+            if (!data) return;
             applyState(data);
           };
 
@@ -358,7 +375,8 @@
           removeBtn.title = '세션에서 제거';
           removeBtn.onclick = async (e) => {
             e.stopPropagation();
-            const data = await window.pywebview.api.detach_dataset(d.dataset_id);
+            const data = await callApi('detach_dataset', d.dataset_id);
+            if (!data) return;
             applyState(data);
           };
 
@@ -405,7 +423,8 @@
       async function sendInputMessage() {
         const text = $('input').value.trim();
         if (!text) return;
-        const data = await window.pywebview.api.send_message(text);
+        const data = await callApi('send_message', text);
+        if (!data) return;
         $('input').value = '';
         applyState(data);
       }
@@ -417,7 +436,9 @@
 
       async function pollConnectionStatus() {
         try {
-          const data = await window.pywebview.api.get_connection_status();
+          if (!backendReady(false)) return;
+          const data = await callApi('get_connection_status');
+          if (!data) return;
           applyState(data || {});
         } catch {
           // polling 실패는 UX를 막지 않는다
@@ -429,7 +450,8 @@
         initInProgress = true;
 
         try {
-          const data = await window.pywebview.api.get_initial_state();
+          const data = await callApi('get_initial_state');
+          if (!data) return;
           applyState(data || {});
           renderSessionPanelVisibility();
           initDone = true;
@@ -451,17 +473,18 @@
         setTimeout(initWhenReady, 50);
       }
 
-      $('btn-new').onclick = async () => applyState(await window.pywebview.api.new_session());
+      $('btn-new').onclick = async () => { const data = await callApi('new_session'); if (data) applyState(data); };
       $('btn-toggle').onclick = () => { state.sessionsVisible = !state.sessionsVisible; renderSessionPanelVisibility(); };
       $('btn-delete').onclick = async () => {
         if (!state.currentSessionId) return;
-        applyState(await window.pywebview.api.delete_session(state.currentSessionId));
+        const data = await callApi('delete_session', state.currentSessionId);
+        if (data) applyState(data);
       };
-      $('btn-attach').onclick = async () => applyState(await window.pywebview.api.attach_files());
+      $('btn-attach').onclick = async () => { const data = await callApi('attach_files'); if (data) applyState(data); };
       $('btn-send').onclick = async () => { await sendInputMessage(); };
 
-      $('btn-install').onclick = async () => toast(await window.pywebview.api.install_build_engine());
-      $('btn-download').onclick = async () => toast(await window.pywebview.api.download_model());
+      $('btn-install').onclick = async () => { const r = await callApi('install_build_engine'); if (r) toast(r); };
+      $('btn-download').onclick = async () => { const r = await callApi('download_model'); if (r) toast(r); };
 
       $('input').addEventListener('keydown', async (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
