@@ -154,6 +154,11 @@
       .result-table { width: 100%; border-collapse: collapse; font-size: 13px; }
       .result-table th, .result-table td { border: 1px solid #334155; padding: 6px 8px; text-align: left; vertical-align: top; user-select: text; }
       .result-table th { background: #1e293b; }
+      .result-img { width: 100%; max-height: 340px; object-fit: contain; border: 1px solid #334155; border-radius: 8px; cursor: zoom-in; background: #0b1220; }
+      .result-meta { margin-top: 8px; font-size: 12px; color: #94a3b8; }
+      .img-modal { position: fixed; inset: 0; background: rgba(2,6,23,.85); display: none; align-items: center; justify-content: center; z-index: 9999; }
+      .img-modal.open { display: flex; }
+      .img-modal img { max-width: 92vw; max-height: 90vh; border-radius: 10px; border: 1px solid #475569; background: #0b1220; }
       .failure-actions { display: none; gap: 10px; margin-top: 10px; }
       .composer {
         border-top: 1px solid var(--line);
@@ -220,6 +225,8 @@
       </footer>
     </div>
 
+    <div id="img-modal" class="img-modal"><img id="img-modal-view" alt="chart preview"></div>
+
     <script>
       const state = {
         connectionOk: false,
@@ -256,6 +263,22 @@
           return null;
         }
         return await fn(...args);
+      }
+
+      function openImageModal(src) {
+        const modal = $('img-modal');
+        const view = $('img-modal-view');
+        if (!modal || !view || !src) return;
+        view.src = src;
+        modal.classList.add('open');
+      }
+
+      function closeImageModal() {
+        const modal = $('img-modal');
+        const view = $('img-modal-view');
+        if (!modal || !view) return;
+        modal.classList.remove('open');
+        view.src = '';
       }
 
       function renderStatus() {
@@ -328,6 +351,13 @@
             await copyText(text);
           };
           card.appendChild(btn);
+        });
+
+        bubble.querySelectorAll('.result-img').forEach((img) => {
+          img.onclick = (e) => {
+            e.stopPropagation();
+            openImageModal(img.getAttribute('src') || '');
+          };
         });
       }
 
@@ -512,6 +542,11 @@
           e.preventDefault();
           await sendInputMessage();
         }
+      });
+
+      $('img-modal').onclick = closeImageModal;
+      window.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') closeImageModal();
       });
 
       window.addEventListener('pywebviewready', initWhenReady);

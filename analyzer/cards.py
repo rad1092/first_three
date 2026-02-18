@@ -6,6 +6,7 @@ from typing import Any
 
 TextCard = dict[str, Any]
 TableCard = dict[str, Any]
+ChartCard = dict[str, Any]
 Card = dict[str, Any]
 
 
@@ -37,6 +38,24 @@ def make_table_card(title: str, df: Any, meta: dict[str, Any] | None = None) -> 
     }
 
 
+def make_chart_card(title: str, image_data_uri: str, meta: dict[str, Any] | None = None) -> ChartCard:
+    return {
+        "type": "chart",
+        "title": title,
+        "image_data_uri": image_data_uri,
+        "meta": meta or {},
+    }
+
+
+def _render_meta(meta: dict[str, Any]) -> str:
+    if not meta:
+        return ""
+    items = [f"{html.escape(str(k))}: {html.escape(str(v))}" for k, v in meta.items() if v is not None]
+    if not items:
+        return ""
+    return f'<div class="result-meta">{" | ".join(items)}</div>'
+
+
 def render_cards_to_html(cards: list[Card]) -> str:
     blocks: list[str] = ['<div class="result-cards">']
     for idx, card in enumerate(cards, start=1):
@@ -45,9 +64,14 @@ def render_cards_to_html(cards: list[Card]) -> str:
         card_type = card.get("type")
         if card_type == "table":
             blocks.append(card.get("html", ""))
+        elif card_type == "chart":
+            src = card.get("image_data_uri", "")
+            blocks.append(f'<img class="result-img" src="{src}" alt="{title}">')
         else:
             text = html.escape(str(card.get("text", ""))).replace("\n", "<br>")
             blocks.append(f'<div class="result-text">{text}</div>')
+
+        blocks.append(_render_meta(card.get("meta", {})))
         blocks.append("</section>")
     blocks.append("</div>")
     return "".join(blocks)

@@ -6,6 +6,7 @@ python-dotenv>=1.0
 requests>=2.31
 pandas>=2.2
 openpyxl>=3.1
+matplotlib>=3.8
 
 # Phase 1+ (placeholder only)
 # transformers

@@ -7,12 +7,13 @@ try:
 except Exception:  # noqa: BLE001
     pd = None
 
-from .cards import Card, make_table_card, make_text_card
+from .cards import Card, make_chart_card, make_table_card, make_text_card
 from .normalize import normalize_text
+from .plotter import create_plot_cards
 
 LAT_NAMES = {normalize_text(v) for v in ["lat", "latitude", "위도", "gps_lat"]}
 LON_NAMES = {normalize_text(v) for v in ["lon", "lng", "longitude", "경도", "gps_lon"]}
-SUPPORTED_FANOUT_INTENTS = {"summary", "validate", "schema", "preview", "columns"}
+SUPPORTED_FANOUT_INTENTS = {"summary", "validate", "schema", "preview", "columns", "plot"}
 
 
 def _ensure_pandas() -> str | None:
@@ -307,6 +308,39 @@ def _execute_compare(action: dict[str, Any], session_state: dict[str, Any]) -> l
     return cards
 
 
+
+def _execute_plot(action: dict[str, Any], session_state: dict[str, Any]) -> list[Card]:
+    dataset_ids = _resolve_dataset_ids(action, session_state)
+    if not dataset_ids:
+        return [make_text_card("실행 실패", "시각화할 데이터셋이 없습니다. 파일을 먼저 첨부해 주세요.")]
+
+    cards: list[Card] = []
+    session_id = session_state.get("session_id")
+    selected_cols = action.get("targets", {}).get("columns", [])
+
+    for did in dataset_ids:
+        bundle = _dataset_bundle(did, session_state)
+        if not bundle:
+            cards.append(make_text_card("실행 실패", f"데이터프레임 로드 실패: {did}"))
+            continue
+        name, df = bundle
+        plot_cards = create_plot_cards(
+            df=df,
+            dataset_name=name,
+            session_id=session_id,
+            args={"top_n": 20, "columns": selected_cols},
+        )
+        if not plot_cards:
+            cards.append(make_text_card(f"[{name}] 시각화 안내", "생성 가능한 차트를 찾지 못했습니다."))
+            continue
+        for c in plot_cards:
+            cards.append(make_chart_card(c.get("title", f"[{name}] 차트"), c.get("image_data_uri", ""), c.get("meta", {})))
+
+    if len(dataset_ids) >= 2 and len(cards) > 8:
+        cards = cards[:8] + [make_text_card("시각화 안내", "차트가 많아 상위 8개만 표시했습니다.")]
+
+    return cards
+
 def execute_actions(actions: list[dict[str, Any]], session_state: dict[str, Any]) -> list[Card]:
     pandas_err = _ensure_pandas()
     if pandas_err:
@@ -319,6 +353,9 @@ def execute_actions(actions: list[dict[str, Any]], session_state: dict[str, Any]
     cards: list[Card] = []
     for action in actions:
         intent = action.get("intent")
+        if intent == "plot":
+            cards.extend(_execute_plot(action, session_state))
+            continue
         if intent == "compare":
             cards.extend(_execute_compare(action, session_state))
             continue
