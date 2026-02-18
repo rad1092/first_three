@@ -248,12 +248,25 @@ class AnalyzerApi:
         else:
             columns = []
 
+        dataset_targets: list[str] = []
+        if pending.get("kind") == "dataset":
+            if isinstance(candidate_id, list):
+                dataset_targets = [str(v) for v in candidate_id if str(v)]
+            elif isinstance(candidate_id, str) and candidate_id:
+                dataset_targets = [candidate_id]
+            all_ids = context.get("all_dataset_ids") or []
+            if len(dataset_targets) == 1 and len(all_ids) >= 2:
+                # compare 확정 시 단일 선택이면 해당 파일 + 다른 첫 파일로 보정
+                other = [d for d in all_ids if d != dataset_targets[0]]
+                if other:
+                    dataset_targets.append(other[0])
+
         action = {
             "intent": context.get("intent") or pending.get("intent") or "summary",
             "targets": {
-                "datasets": [context.get("dataset_id")] if context.get("dataset_id") else [],
+                "datasets": dataset_targets or ([context.get("dataset_id")] if context.get("dataset_id") else []),
                 "sheets": [],
-                "columns": columns,
+                "columns": [] if pending.get("kind") == "dataset" else columns,
             },
             "args": {},
             "needs_clarification": False,
@@ -415,6 +428,9 @@ class AnalyzerApi:
                     self._resolve_pending_with_selection(pending, candidates[choice - 1])
                     return self._state()
                 if self._is_reject(trimmed):
+                    if pending.get("kind") == "dataset":
+                        self._append_assistant("비교 대상은 번호로 선택해 주세요. (예: 1 또는 2)")
+                        return self._state()
                     menu = {
                         **pending,
                         "stage": "second_menu",
