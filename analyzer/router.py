@@ -165,6 +165,21 @@ def _plot_column_resolution(text: str, all_columns: list[str]) -> tuple[list[str
     return [c["id"] for c in clarify["candidates"]], clarify, True
 
 
+def _is_general_validate_query(text: str) -> bool:
+    norm = normalize_text(text)
+    missing_terms = ["결측", "결측치", "누락", "missing", "null"]
+    duplicate_terms = ["중복", "중복행", "duplicate", "duplicated"]
+    return any(normalize_text(t) in norm for t in missing_terms + duplicate_terms)
+
+
+def _is_explicit_column_match_for_validate(strong: list[tuple[str, float]]) -> bool:
+    if not strong:
+        return False
+    top = strong[0][1]
+    second = strong[1][1] if len(strong) > 1 else 0.0
+    return top >= 0.75 or (top >= 0.6 and (top - second) >= 0.15)
+
+
 def _compare_clarify(session_state: dict[str, Any], text: str, dataset_targets: list[str]) -> dict[str, Any] | None:
     datasets: list[dict[str, Any]] = session_state.get("datasets", [])
     if len(dataset_targets) >= 2:
@@ -199,39 +214,50 @@ def route(text: str, session_state: dict[str, Any]) -> list[dict[str, Any]]:
     else:
         ranked = rank_column_candidates(text, all_columns)
         strong = [(c, s) for c, s in ranked if s >= 0.45]
-        requires_column_target = intent in {"validate", "filter", "aggregate"}
 
-        if requires_column_target and strong:
-            selected_columns = [strong[0][0]]
-            if _is_column_ambiguous(strong, intent):
+        if intent in {"filter", "aggregate"}:
+            if strong:
+                selected_columns = [strong[0][0]]
+                if _is_column_ambiguous(strong, intent):
+                    needs_clarification = True
+            elif all_columns:
                 needs_clarification = True
-                top3 = strong[:3]
+
+            if needs_clarification:
+                top3 = strong[:3] if strong else [(col, 0.0) for col in all_columns[:3]]
                 clarify = {
                     "kind": "column",
-                    "question": "후보가 여러 개예요. 번호(1/2/3)로 선택해 주세요. 아니라면 '아니다'라고 입력해 주세요.",
+                    "question": "요청한 컬럼을 정확히 찾지 못했어요. 관련 후보를 골라 주세요.",
                     "candidates": [{"id": col, "label": col, "score": round(score, 4)} for col, score in top3],
                     "context": {
                         "intent": intent,
                         "raw_query": text,
                         "dataset_id": dataset_targets[0] if dataset_targets else None,
-                        "all_candidates": [{"id": col, "label": col, "score": round(score, 4)} for col, score in strong[:10]],
+                        "all_candidates": [{"id": col, "label": col, "score": round(score, 4)} for col, score in (strong[:10] if strong else [(c, 0.0) for c in all_columns[:10]])],
                     },
                 }
                 selected_columns = [c["id"] for c in clarify["candidates"]]
-        elif requires_column_target and all_columns:
-            needs_clarification = True
-            clarify = {
-                "kind": "column",
-                "question": "요청한 컬럼을 정확히 찾지 못했어요. 관련 후보를 골라 주세요.",
-                "candidates": [{"id": col, "label": col, "score": 0.0} for col in all_columns[:3]],
-                "context": {
-                    "intent": intent,
-                    "raw_query": text,
-                    "dataset_id": dataset_targets[0] if dataset_targets else None,
-                    "all_candidates": [{"id": col, "label": col, "score": 0.0} for col in all_columns[:10]],
-                },
-            }
-            selected_columns = [c["id"] for c in clarify["candidates"]]
+
+        elif intent == "validate":
+            if _is_general_validate_query(text):
+                if strong and _is_explicit_column_match_for_validate(strong):
+                    selected_columns = [strong[0][0]]
+            elif strong:
+                selected_columns = [strong[0][0]]
+                if _is_column_ambiguous(strong, intent):
+                    needs_clarification = True
+                    clarify = {
+                        "kind": "column",
+                        "question": "후보가 여러 개예요. 번호(1/2/3)로 선택해 주세요. 아니라면 '아니다'라고 입력해 주세요.",
+                        "candidates": [{"id": col, "label": col, "score": round(score, 4)} for col, score in strong[:3]],
+                        "context": {
+                            "intent": intent,
+                            "raw_query": text,
+                            "dataset_id": dataset_targets[0] if dataset_targets else None,
+                            "all_candidates": [{"id": col, "label": col, "score": round(score, 4)} for col, score in strong[:10]],
+                        },
+                    }
+                    selected_columns = [c["id"] for c in clarify["candidates"]]
 
     args: dict[str, Any] = {}
     if intent == "preview":

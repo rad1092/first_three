@@ -515,6 +515,51 @@ class AnalyzerApi:
         lines.append("```")
         return "\n".join(lines)
 
+
+
+    def _is_cancel_pending(self, text: str) -> bool:
+        return text.strip().lower() in {"취소", "cancel", "그만", "나가기"}
+
+    def _has_analysis_keyword(self, text: str) -> bool:
+        t = text.lower()
+        keywords = [
+            "요약", "스키마", "미리보기", "상위", "중복", "결측", "검증", "비교", "그래프", "차트", "시각화",
+            "filter", "aggregate", "compare", "plot",
+        ]
+        return any(k in t for k in keywords)
+
+    def _is_numeric_only_choice(self, text: str) -> bool:
+        return re.fullmatch(r"\s*\d+\s*", text) is not None
+
+    def _is_new_question_while_pending(self, text: str) -> bool:
+        if self._is_numeric_only_choice(text):
+            return False
+        if self._is_yes(text) or self._is_no(text) or self._is_reject(text):
+            return False
+        return self._has_analysis_keyword(text)
+
+    def _route_and_respond(self, trimmed: str) -> dict:
+        session_state = self._state()
+        actions = route(trimmed, session_state)
+        first = actions[0]
+        if first.get("needs_clarification"):
+            clarify = first.get("clarify") or {}
+            pending_new = {
+                "intent": first.get("intent"),
+                "kind": clarify.get("kind", "column"),
+                "question": clarify.get("question", "대상을 선택해 주세요."),
+                "candidates": clarify.get("candidates", []),
+                "context": clarify.get("context", {}),
+                "stage": "initial",
+            }
+            self._set_pending(pending_new)
+            labels = [f"{i+1}. {c['label']} (score={c.get('score',0)})" for i, c in enumerate(pending_new["candidates"])]
+            self._append_assistant(pending_new["question"] + "\n" + "\n".join(labels) + "\n1/2/3으로 선택하거나 '아니다'라고 입력해 주세요.")
+            return self._state()
+
+        self._execute_and_append(actions)
+        return self._state()
+
     def send_message(self, text: str) -> dict:
         trimmed = text.strip()
         if not trimmed:
@@ -567,6 +612,15 @@ class AnalyzerApi:
 
         pending = self._pending_by_session.get(self.current_session_id)
         if pending:
+            if self._is_cancel_pending(trimmed):
+                self._clear_pending()
+                self._append_assistant("좋아요. 방금 선택 단계는 취소했어요. 새 질문을 입력해 주세요.")
+                return self._state()
+            if self._is_new_question_while_pending(trimmed):
+                self._clear_pending()
+                self._append_assistant("이전 선택 단계를 취소하고 새 질문으로 넘어갈게요.")
+                return self._route_and_respond(trimmed)
+
             stage = pending.get("stage", "initial")
             candidates = pending.get("candidates", [])
 
