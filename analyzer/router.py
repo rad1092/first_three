@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .normalize import find_column_candidates, normalize_text
+from .normalize import normalize_text, rank_column_candidates
 
 INTENTS = [
     "summary",
@@ -40,10 +40,7 @@ def _detect_intent(text: str) -> str:
     best_score = 0
 
     for intent, kws in INTENT_KEYWORDS.items():
-        score = 0
-        for kw in kws:
-            if normalize_text(kw) in norm:
-                score += 1
+        score = sum(1 for kw in kws if normalize_text(kw) in norm)
         if score > best_score:
             best_score = score
             best_intent = intent
@@ -56,12 +53,10 @@ def _detect_dataset_targets(text: str, session_state: dict[str, Any]) -> list[st
     active = session_state.get("active_dataset")
     t = text.lower()
 
-    if "전체" in text or "all" in t or "첨부한" in text:
+    if "전체" in text or "all" in t:
         return [d["dataset_id"] for d in datasets]
-
     if "csv" in t:
         return [d["dataset_id"] for d in datasets if d.get("kind") == "csv"]
-
     if "엑셀" in text or "xlsx" in t:
         return [d["dataset_id"] for d in datasets if d.get("kind") == "xlsx"]
 
@@ -72,7 +67,6 @@ def _detect_dataset_targets(text: str, session_state: dict[str, Any]) -> list[st
 
     if active:
         return [active["dataset_id"]]
-
     return [datasets[0]["dataset_id"]] if datasets else []
 
 
@@ -81,41 +75,79 @@ def _collect_columns_for_targets(target_ids: list[str], session_state: dict[str,
     cols: list[str] = []
     for tid in target_ids:
         d = by_id.get(tid)
-        if not d:
-            continue
-        cols.extend(d.get("columns", []))
-    # unique preserve order
+        if d:
+            cols.extend(d.get("columns", []))
+
     seen = set()
-    out = []
+    unique = []
     for c in cols:
         if c not in seen:
             seen.add(c)
-            out.append(c)
-    return out
+            unique.append(c)
+    return unique
+
+
+def _is_column_ambiguous(ranked: list[tuple[str, float]], intent: str) -> bool:
+    if len(ranked) < 2:
+        return False
+    top1 = ranked[0][1]
+    top2 = ranked[1][1]
+    if intent in {"validate", "aggregate", "filter", "columns"} and top2 >= 0.5:
+        return True
+    return top1 < 0.80 or (top1 - top2) < 0.12
 
 
 def route(text: str, session_state: dict[str, Any]) -> list[dict[str, Any]]:
     intent = _detect_intent(text)
     dataset_targets = _detect_dataset_targets(text, session_state)
     all_columns = _collect_columns_for_targets(dataset_targets, session_state)
-    column_candidates = find_column_candidates(text, all_columns, top_n=10)
+
+    ranked = rank_column_candidates(text, all_columns)
+    strong = [(c, s) for c, s in ranked if s >= 0.45]
 
     needs_clarification = False
     clarify = None
+    selected_columns: list[str] = []
 
-    if any(token in text for token in ["위도", "경도", "lat", "lon", "id", "시간", "date"]):
-        if not column_candidates:
+    if strong:
+        selected_columns = [strong[0][0]]
+        if _is_column_ambiguous(strong, intent):
             needs_clarification = True
+            top3 = strong[:3]
             clarify = {
-                "question": "요청한 컬럼을 정확히 찾지 못했습니다. 아래 후보 중에서 선택해 주세요.",
-                "candidates": all_columns[:10],
+                "kind": "column",
+                "question": "후보가 여러 개예요. 번호(1/2/3)로 선택해 주세요. 아니라면 '아니다'라고 입력해 주세요.",
+                "candidates": [
+                    {"id": col, "label": col, "score": round(score, 4)} for col, score in top3
+                ],
+                "context": {
+                    "intent": intent,
+                    "raw_query": text,
+                    "dataset_id": dataset_targets[0] if dataset_targets else None,
+                    "all_candidates": [
+                        {"id": col, "label": col, "score": round(score, 4)} for col, score in strong[:10]
+                    ],
+                },
             }
-        elif len(column_candidates) > 3:
-            needs_clarification = True
-            clarify = {
-                "question": "컬럼 후보가 여러 개입니다. 우선 상위 3개 중 선택해 주세요.",
-                "candidates": column_candidates[:3],
-            }
+            selected_columns = [c["id"] for c in clarify["candidates"]]
+    elif all_columns:
+        needs_clarification = True
+        clarify = {
+            "kind": "column",
+            "question": "요청한 컬럼을 정확히 찾지 못했어요. 관련 후보를 골라 주세요.",
+            "candidates": [
+                {"id": col, "label": col, "score": 0.0} for col in all_columns[:3]
+            ],
+            "context": {
+                "intent": intent,
+                "raw_query": text,
+                "dataset_id": dataset_targets[0] if dataset_targets else None,
+                "all_candidates": [
+                    {"id": col, "label": col, "score": 0.0} for col in all_columns[:10]
+                ],
+            },
+        }
+        selected_columns = [c["id"] for c in clarify["candidates"]]
 
     args: dict[str, Any] = {}
     if intent == "preview":
@@ -128,7 +160,7 @@ def route(text: str, session_state: dict[str, Any]) -> list[dict[str, Any]]:
         "targets": {
             "datasets": dataset_targets,
             "sheets": [],
-            "columns": column_candidates[:3] if needs_clarification and column_candidates else column_candidates,
+            "columns": selected_columns,
         },
         "args": args,
         "needs_clarification": needs_clarification,

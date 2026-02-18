@@ -25,7 +25,7 @@ def normalize_text(text: str) -> str:
 def expand_term_with_synonyms(term: str) -> set[str]:
     norm = normalize_text(term)
     expanded = {norm}
-    for _, words in SYNONYM_GROUPS.items():
+    for words in SYNONYM_GROUPS.values():
         normalized_words = {normalize_text(w) for w in words}
         if norm in normalized_words:
             expanded.update(normalized_words)
@@ -36,21 +36,24 @@ def similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, normalize_text(a), normalize_text(b)).ratio()
 
 
-def find_column_candidates(query: str, columns: list[str], top_n: int = 10) -> list[str]:
+def rank_column_candidates(query: str, columns: list[str]) -> list[tuple[str, float]]:
     if not columns:
         return []
 
-    query_terms = [t for t in re.split(r"\s+|,", query) if t.strip()]
+    query_terms = [t for t in re.split(r"\s+|,|/", query) if t.strip()]
     expanded_terms: set[str] = set()
     for term in query_terms:
         expanded_terms.update(expand_term_with_synonyms(term))
 
-    scored: list[tuple[float, str]] = []
+    scored: list[tuple[str, float]] = []
     for col in columns:
         best = max((similarity(term, col) for term in expanded_terms), default=0.0)
-        scored.append((best, col))
+        scored.append((col, best))
 
-    scored.sort(key=lambda x: x[0], reverse=True)
-    # threshold for practical fuzzy matching
-    filtered = [col for score, col in scored if score >= 0.45]
-    return filtered[:top_n]
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return scored
+
+
+def find_column_candidates(query: str, columns: list[str], top_n: int = 10) -> list[str]:
+    ranked = rank_column_candidates(query, columns)
+    return [col for col, score in ranked if score >= 0.45][:top_n]

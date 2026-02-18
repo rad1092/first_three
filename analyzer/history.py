@@ -49,6 +49,7 @@ def _default_session(session_id: str, created_at: str | None = None, title: str 
 def load_sessions() -> dict[str, Any]:
     ensure_history_file()
     sessions: dict[str, dict[str, Any]] = {}
+    pending_by_session: dict[str, dict[str, Any] | None] = {}
 
     with history_file_path().open("r", encoding="utf-8") as f:
         for raw_line in f:
@@ -107,6 +108,16 @@ def load_sessions() -> dict[str, Any]:
                 if isinstance(new_title, str) and new_title.strip():
                     session["title"] = new_title.strip()
                 session["last_updated_at"] = event.get("created_at") or session["last_updated_at"]
+            elif event_type == "clarification_requested":
+                pending_by_session[session_id] = {
+                    "kind": event.get("kind"),
+                    "question": event.get("question"),
+                    "candidates": event.get("candidates", []),
+                    "context": event.get("context", {}),
+                    "stage": event.get("stage", "initial"),
+                }
+            elif event_type in {"clarification_resolved", "clarification_cleared"}:
+                pending_by_session[session_id] = None
 
     visible_sessions = [s for s in sessions.values() if not s.get("deleted", False)]
     visible_sessions.sort(key=lambda s: s.get("last_updated_at", ""), reverse=True)
@@ -124,4 +135,7 @@ def load_sessions() -> dict[str, Any]:
         ],
         "messages_by_session": {s["session_id"]: s.get("messages", []) for s in visible_sessions},
         "files_by_session": {s["session_id"]: s.get("files", []) for s in visible_sessions},
+        "pending_by_session": {
+            sid: pending_by_session.get(sid) for sid in [s["session_id"] for s in visible_sessions]
+        },
     }
