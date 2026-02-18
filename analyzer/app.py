@@ -586,10 +586,12 @@ def run_app() -> None:
         js_api=api,
         width=1180,
         height=760,
-        http_server=True,
     )
     debug = os.getenv("ANALYZER_WEBVIEW_DEBUG", "0") == "1"
-    webview.start(debug=debug)
+    try:
+        webview.start(debug=debug, http_server=True)
+    except TypeError:
+        webview.start(debug=debug)
 
 
 if __name__ == "__main__":
