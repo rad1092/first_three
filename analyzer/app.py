@@ -12,7 +12,7 @@ import webview
 from .backend import check_bitnetd_health
 from .cards import render_cards_to_html
 from .datasets import DatasetMeta, DatasetRegistry
-from .executor import execute_actions
+from .executor import ExecutionTrace, execute_actions
 from .history import append_event, ensure_history_file, load_sessions
 from .router import route
 
@@ -25,6 +25,8 @@ class SessionDatasetState:
     active_dataset_id: str | None = None
     hydrated: bool = False
     file_signature: tuple[str, ...] = field(default_factory=tuple)
+    traces: list[ExecutionTrace] = field(default_factory=list)
+    card_trace_ids: list[str] = field(default_factory=list)
 
 
 def _utc_now_iso() -> str:
@@ -93,19 +95,57 @@ class AnalyzerApi:
         ui_state = self._state()
         st = self._state_for(self.current_session_id)
         return {
+            "session_id": self.current_session_id,
             "datasets": ui_state.get("datasets", []),
             "active_dataset": ui_state.get("active_dataset"),
             "registry": st.registry,
         }
 
     def _execute_and_append(self, actions: list[dict]) -> None:
-        cards = execute_actions(actions, self._session_runtime_state())
+        assert self.current_session_id is not None
+        st = self._state_for(self.current_session_id)
+        cards, traces, card_trace_ids = execute_actions(actions, self._session_runtime_state())
+
+        for trace in traces:
+            st.traces.append(trace)
+            if len(st.traces) > 20:
+                st.traces = st.traces[-20:]
+            append_event(
+                {
+                    "type": "execution_trace",
+                    "session_id": self.current_session_id,
+                    "trace_id": trace.get("trace_id"),
+                    "intent": trace.get("intent"),
+                    "datasets": trace.get("datasets", []),
+                    "columns": trace.get("columns", []),
+                    "args": trace.get("args", {}),
+                    "steps": trace.get("steps", []),
+                    "code": trace.get("code", ""),
+                    "created_at": trace.get("created_at") or _utc_now_iso(),
+                }
+            )
+
+        st.card_trace_ids.extend([t for t in card_trace_ids if t])
+        if len(st.card_trace_ids) > 200:
+            st.card_trace_ids = st.card_trace_ids[-200:]
+
+        for idx, card in enumerate(cards):
+            trace_id = card_trace_ids[idx] if idx < len(card_trace_ids) else None
+            if not trace_id:
+                continue
+            meta = card.get("meta") or {}
+            if isinstance(meta, dict):
+                meta["trace_id"] = trace_id
+                card["meta"] = meta
+
         self._append_assistant(render_cards_to_html(cards))
 
     def _state_for(self, session_id: str) -> SessionDatasetState:
         return self._session_states.setdefault(session_id, SessionDatasetState(session_id=session_id))
 
-    def _sync_session_states_from_history(self, files_by_session: dict[str, list[dict]]) -> None:
+    def _sync_session_states_from_history(
+        self, files_by_session: dict[str, list[dict]], traces_by_session: dict[str, list[dict]]
+    ) -> None:
         active_ids = set(files_by_session.keys())
         for sid in list(self._session_states.keys()):
             if sid not in active_ids:
@@ -120,6 +160,12 @@ class AnalyzerApi:
                 st.hydrated = False
                 st.registry.clear()
                 st.active_dataset_id = None
+                st.traces = []
+                st.card_trace_ids = []
+
+            loaded_traces = traces_by_session.get(sid, [])
+            if len(loaded_traces) >= len(st.traces):
+                st.traces = loaded_traces[-20:]
 
     def _sync_pending_from_history(self, pending_by_session: dict[str, dict | None]) -> None:
         self._pending_by_session = {k: v for k, v in pending_by_session.items()}
@@ -194,7 +240,7 @@ class AnalyzerApi:
         messages_by_session = data["messages_by_session"]
         files_by_session = data.get("files_by_session", {})
 
-        self._sync_session_states_from_history(files_by_session)
+        self._sync_session_states_from_history(files_by_session, data.get("traces_by_session", {}))
         self._sync_pending_from_history(data.get("pending_by_session", {}))
 
         if self.current_session_id not in messages_by_session:
@@ -425,6 +471,50 @@ class AnalyzerApi:
         self._append_assistant(f"세션에서 첨부 제거: {meta.name}")
         return self._state()
 
+    def _extract_trace_request(self, text: str) -> tuple[str, int | None] | None:
+        t = text.strip().lower()
+        if not t:
+            return None
+        code_match = re.search(r"(\d+)번\s*(코드|로직)", t)
+        if code_match:
+            return code_match.group(2), int(code_match.group(1))
+        if any(k in t for k in ["코드 보여줘", "방금 코드"]):
+            return "코드", None
+        if any(k in t for k in ["로직 보여줘", "방금 로직", "방금 로직 보여줘"]):
+            return "로직", None
+        return None
+
+    def _find_trace_by_number(self, n: int | None) -> ExecutionTrace | None:
+        assert self.current_session_id is not None
+        st = self._state_for(self.current_session_id)
+        if not st.traces:
+            return None
+        if n is None:
+            return st.traces[-1]
+
+        if 1 <= n <= len(st.card_trace_ids):
+            trace_id = st.card_trace_ids[n - 1]
+            for trace in reversed(st.traces):
+                if trace.get("trace_id") == trace_id:
+                    return trace
+
+        if 1 <= n <= len(st.traces):
+            return st.traces[n - 1]
+        return None
+
+    def _render_trace_card_text(self, trace: ExecutionTrace) -> str:
+        steps = trace.get("steps", [])
+        code = str(trace.get("code", "")).strip()
+        lines = ["[로직]"]
+        for idx, step in enumerate(steps, start=1):
+            lines.append(f"{idx}. {step}")
+        lines.append("")
+        lines.append("[재현 코드]")
+        lines.append("```python")
+        lines.append(code)
+        lines.append("```")
+        return "\n".join(lines)
+
     def send_message(self, text: str) -> dict:
         trimmed = text.strip()
         if not trimmed:
@@ -456,6 +546,24 @@ class AnalyzerApi:
                     "created_at": _utc_now_iso(),
                 }
             )
+
+        trace_req = self._extract_trace_request(trimmed)
+        if trace_req:
+            _, number = trace_req
+            trace = self._find_trace_by_number(number)
+            if not trace:
+                self._append_assistant("코드/로직을 보여줄 실행 이력이 없습니다. 먼저 요약/검증/비교/plot을 실행해 주세요.")
+                return self._state()
+            text_card = render_cards_to_html([
+                {
+                    "type": "text",
+                    "title": f"코드/로직 보기 · intent={trace.get('intent', 'unknown')}",
+                    "text": self._render_trace_card_text(trace),
+                    "meta": {"trace_id": trace.get("trace_id")},
+                }
+            ])
+            self._append_assistant(text_card)
+            return self._state()
 
         pending = self._pending_by_session.get(self.current_session_id)
         if pending:

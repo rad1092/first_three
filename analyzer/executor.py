@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
 
 try:
     import pandas as pd
@@ -14,6 +16,13 @@ from .plotter import create_plot_cards
 LAT_NAMES = {normalize_text(v) for v in ["lat", "latitude", "위도", "gps_lat"]}
 LON_NAMES = {normalize_text(v) for v in ["lon", "lng", "longitude", "경도", "gps_lon"]}
 SUPPORTED_FANOUT_INTENTS = {"summary", "validate", "schema", "preview", "columns", "plot"}
+
+
+ExecutionTrace = dict[str, Any]
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _ensure_pandas() -> str | None:
@@ -308,7 +317,6 @@ def _execute_compare(action: dict[str, Any], session_state: dict[str, Any]) -> l
     return cards
 
 
-
 def _execute_plot(action: dict[str, Any], session_state: dict[str, Any]) -> list[Card]:
     dataset_ids = _resolve_dataset_ids(action, session_state)
     if not dataset_ids:
@@ -341,45 +349,191 @@ def _execute_plot(action: dict[str, Any], session_state: dict[str, Any]) -> list
 
     return cards
 
-def execute_actions(actions: list[dict[str, Any]], session_state: dict[str, Any]) -> list[Card]:
+
+def _code_lines_for_intent(intent: str, dataset_ids: list[str], columns: list[str], args: dict[str, Any]) -> list[str]:
+    did = dataset_ids[0] if dataset_ids else "<dataset_id>"
+    lines = [
+        "import pandas as pd",
+        "",
+        "# 앱 내부: dataset_id -> DataFrame",
+        f"df = registry.get_df('{did}')",
+    ]
+    if columns:
+        lines.append(f"target_cols = {columns!r}")
+        lines.append("existing_cols = [c for c in target_cols if c in df.columns]")
+        lines.append("df = df[existing_cols] if existing_cols else df")
+
+    if intent == "summary":
+        lines.extend(
+            [
+                "rows, cols = df.shape",
+                "dup_count = int(df.duplicated().sum())",
+                "missing_rate = (df.isna().mean() * 100).round(2)",
+                "missing_top20 = missing_rate.sort_values(ascending=False).head(20)",
+                "numeric_summary = df.select_dtypes(include=['number']).describe().T",
+            ]
+        )
+    elif intent == "validate":
+        lines.extend(
+            [
+                "dup_count = int(df.duplicated().sum())",
+                "missing_rate = (df.isna().mean() * 100).round(2)",
+                "missing_top20 = missing_rate.sort_values(ascending=False).head(20)",
+                "lat_series = pd.to_numeric(df.get('lat', pd.Series(dtype='float')), errors='coerce')",
+                "lon_series = pd.to_numeric(df.get('lon', pd.Series(dtype='float')), errors='coerce')",
+                "lat_out_of_range = int(((lat_series < -90) | (lat_series > 90)).fillna(False).sum())",
+                "lon_out_of_range = int(((lon_series < -180) | (lon_series > 180)).fillna(False).sum())",
+            ]
+        )
+    elif intent == "compare":
+        lines = [
+            "import pandas as pd",
+            "",
+            "# 앱 내부: dataset_id -> DataFrame",
+            f"dataset_ids = {dataset_ids!r}",
+            "frames = {did: registry.get_df(did) for did in dataset_ids}",
+            "columns_by_dataset = {did: set(df.columns.astype(str)) for did, df in frames.items()}",
+            "common_columns = set.intersection(*columns_by_dataset.values()) if columns_by_dataset else set()",
+            "schema_diff = {did: sorted(cols - common_columns) for did, cols in columns_by_dataset.items()}",
+            "missing_rate = {did: (df.isna().mean() * 100).round(2) for did, df in frames.items()}",
+            "# 값 분포 비교 예시",
+            "value_dist = {did: df.iloc[:, 0].value_counts(normalize=True).head(10) for did, df in frames.items() if not df.empty}",
+        ]
+    elif intent == "plot":
+        lines.extend(
+            [
+                "numeric_cols = df.select_dtypes(include=['number']).columns.tolist()",
+                "if numeric_cols:",
+                "    ax = df[numeric_cols[0]].dropna().plot(kind='hist', bins=20, title='Auto Plot')",
+                "    fig = ax.get_figure()",
+                "    fig.tight_layout()",
+            ]
+        )
+    elif intent == "schema":
+        lines.extend(
+            [
+                "schema = pd.DataFrame({",
+                "    'column': df.columns.astype(str),",
+                "    'dtype': [str(df[c].dtype) for c in df.columns],",
+                "    'non_null': [int(df[c].notna().sum()) for c in df.columns],",
+                "    'null_count': [int(df[c].isna().sum()) for c in df.columns],",
+                "})",
+            ]
+        )
+    elif intent == "preview":
+        limit = int(args.get("limit", 20))
+        lines.append(f"preview_df = df.head({limit})")
+    elif intent == "columns":
+        lines.append("all_columns = df.columns.astype(str).tolist()")
+
+    return lines
+
+
+def _steps_for_intent(intent: str, dataset_names: list[str], columns: list[str]) -> list[str]:
+    steps = [f"대상 데이터셋 확인: {', '.join(dataset_names) if dataset_names else '없음'}"]
+    if columns:
+        steps.append(f"요청 컬럼 필터 적용: {', '.join(columns)}")
+    else:
+        steps.append("요청 컬럼이 없어서 전체 컬럼 사용")
+
+    intent_step = {
+        "summary": "기본 요약(행/열/중복), 결측률, 숫자형 통계 계산",
+        "validate": "중복/결측률과 좌표 범위(위도/경도) 검증 수행",
+        "compare": "파일 간 스키마(set 비교), 결측률, 숫자형 기초통계 비교",
+        "plot": "숫자형 중심 자동 차트 생성",
+        "schema": "컬럼 dtype/non-null/null/sample 기반 스키마 테이블 생성",
+        "preview": "상위 N행 미리보기 생성",
+        "columns": "전체 컬럼 목록 생성",
+    }
+    steps.append(intent_step.get(intent, f"intent={intent} 실행"))
+    steps.append("결과 카드를 렌더링하여 채팅에 출력")
+    return steps
+
+
+def _build_trace(action: dict[str, Any], session_state: dict[str, Any], dataset_ids: list[str], dataset_names: list[str]) -> ExecutionTrace:
+    intent = str(action.get("intent") or "summary")
+    columns = [str(c) for c in action.get("targets", {}).get("columns", []) if c]
+    args = action.get("args", {}) if isinstance(action.get("args"), dict) else {}
+    datasets = [{"dataset_id": did, "name": dataset_names[idx] if idx < len(dataset_names) else did} for idx, did in enumerate(dataset_ids)]
+    return {
+        "trace_id": str(uuid4()),
+        "session_id": session_state.get("session_id"),
+        "intent": intent,
+        "datasets": datasets,
+        "columns": columns,
+        "args": args,
+        "steps": _steps_for_intent(intent, dataset_names, columns),
+        "code": "\n".join(_code_lines_for_intent(intent, dataset_ids, columns, args)),
+        "created_at": _utc_now_iso(),
+    }
+
+
+def execute_actions(actions: list[dict[str, Any]], session_state: dict[str, Any]) -> tuple[list[Card], list[ExecutionTrace], list[str | None]]:
     pandas_err = _ensure_pandas()
     if pandas_err:
-        return [make_text_card("실행 실패", pandas_err)]
+        return [make_text_card("실행 실패", pandas_err)], [], [None]
 
     registry = session_state.get("registry")
     if not registry:
-        return [make_text_card("실행 실패", "데이터 레지스트리를 찾지 못했습니다.")]
+        return [make_text_card("실행 실패", "데이터 레지스트리를 찾지 못했습니다.")], [], [None]
 
     cards: list[Card] = []
+    traces: list[ExecutionTrace] = []
+    card_trace_ids: list[str | None] = []
+
     for action in actions:
         intent = action.get("intent")
+        dataset_ids = _resolve_dataset_ids(action, session_state)
+        names_by_id: dict[str, str] = {}
+        for did in dataset_ids:
+            bundle = _dataset_bundle(did, session_state)
+            if bundle:
+                names_by_id[did] = bundle[0]
+
+        trace = _build_trace(action, session_state, dataset_ids, [names_by_id.get(did, did) for did in dataset_ids])
+        traces.append(trace)
+        trace_id = trace["trace_id"]
+
         if intent == "plot":
-            cards.extend(_execute_plot(action, session_state))
+            new_cards = _execute_plot(action, session_state)
+            cards.extend(new_cards)
+            card_trace_ids.extend([trace_id for _ in new_cards])
             continue
         if intent == "compare":
-            cards.extend(_execute_compare(action, session_state))
+            new_cards = _execute_compare(action, session_state)
+            cards.extend(new_cards)
+            card_trace_ids.extend([trace_id for _ in new_cards])
             continue
 
-        dataset_ids = _resolve_dataset_ids(action, session_state)
         if not dataset_ids:
-            cards.append(make_text_card("실행 실패", "분석할 데이터셋이 없습니다. 파일을 먼저 첨부해 주세요."))
+            new_cards = [make_text_card("실행 실패", "분석할 데이터셋이 없습니다. 파일을 먼저 첨부해 주세요.")]
+            cards.extend(new_cards)
+            card_trace_ids.extend([trace_id])
             continue
 
         if intent in SUPPORTED_FANOUT_INTENTS and len(dataset_ids) >= 1:
             for did in dataset_ids:
                 bundle = _dataset_bundle(did, session_state)
                 if not bundle:
-                    cards.append(make_text_card("실행 실패", f"데이터프레임 로드 실패: {did}"))
+                    new_cards = [make_text_card("실행 실패", f"데이터프레임 로드 실패: {did}")]
+                    cards.extend(new_cards)
+                    card_trace_ids.extend([trace_id])
                     continue
                 name, df = bundle
-                cards.extend(_execute_for_df(action, name, df))
+                new_cards = _execute_for_df(action, name, df)
+                cards.extend(new_cards)
+                card_trace_ids.extend([trace_id for _ in new_cards])
             continue
 
         bundle = _dataset_bundle(dataset_ids[0], session_state)
         if not bundle:
-            cards.append(make_text_card("실행 실패", f"데이터프레임 로드 실패: {dataset_ids[0]}"))
+            new_cards = [make_text_card("실행 실패", f"데이터프레임 로드 실패: {dataset_ids[0]}")]
+            cards.extend(new_cards)
+            card_trace_ids.extend([trace_id])
             continue
         name, df = bundle
-        cards.extend(_execute_for_df(action, name, df))
+        new_cards = _execute_for_df(action, name, df)
+        cards.extend(new_cards)
+        card_trace_ids.extend([trace_id for _ in new_cards])
 
-    return cards
+    return cards, traces, card_trace_ids

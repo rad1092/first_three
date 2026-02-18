@@ -50,6 +50,7 @@ def load_sessions() -> dict[str, Any]:
     ensure_history_file()
     sessions: dict[str, dict[str, Any]] = {}
     pending_by_session: dict[str, dict[str, Any] | None] = {}
+    traces_by_session: dict[str, list[dict[str, Any]]] = {}
 
     with history_file_path().open("r", encoding="utf-8") as f:
         for raw_line in f:
@@ -134,6 +135,22 @@ def load_sessions() -> dict[str, Any]:
                 }
             elif event_type in {"clarification_resolved", "clarification_cleared"}:
                 pending_by_session[session_id] = None
+            elif event_type == "execution_trace":
+                trace = {
+                    "trace_id": event.get("trace_id"),
+                    "session_id": session_id,
+                    "intent": event.get("intent"),
+                    "datasets": event.get("datasets", []),
+                    "columns": event.get("columns", []),
+                    "args": event.get("args", {}),
+                    "steps": event.get("steps", []),
+                    "code": event.get("code", ""),
+                    "created_at": event.get("created_at") or _utc_now_iso(),
+                }
+                traces = traces_by_session.setdefault(session_id, [])
+                traces.append(trace)
+                if len(traces) > 20:
+                    del traces[:-20]
 
     visible_sessions = [s for s in sessions.values() if not s.get("deleted", False)]
     visible_sessions.sort(key=lambda s: s.get("last_updated_at", ""), reverse=True)
@@ -154,4 +171,5 @@ def load_sessions() -> dict[str, Any]:
         "pending_by_session": {
             sid: pending_by_session.get(sid) for sid in [s["session_id"] for s in visible_sessions]
         },
+        "traces_by_session": {s["session_id"]: traces_by_session.get(s["session_id"], []) for s in visible_sessions},
     }

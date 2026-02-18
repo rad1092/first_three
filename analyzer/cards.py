@@ -56,11 +56,24 @@ def _render_meta(meta: dict[str, Any]) -> str:
     return f'<div class="result-meta">{" | ".join(items)}</div>'
 
 
+def _render_text(text: str) -> str:
+    if "```" in text:
+        return f'<pre class="result-pre">{html.escape(text)}</pre>'
+    escaped = html.escape(text).replace("\n", "<br>")
+    return f'<div class="result-text">{escaped}</div>'
+
+
 def render_cards_to_html(cards: list[Card]) -> str:
     blocks: list[str] = ['<div class="result-cards">']
     for idx, card in enumerate(cards, start=1):
         title = html.escape(str(card.get("title", "결과")))
-        blocks.append(f'<section class="result-card"><div class="result-card-title">#{idx} {title}</div>')
+        meta = card.get("meta", {})
+        trace_id_attr = ""
+        trace_id = meta.get("trace_id") if isinstance(meta, dict) else None
+        if trace_id:
+            trace_id_attr = f' data-trace-id="{html.escape(str(trace_id))}"'
+
+        blocks.append(f'<section class="result-card"{trace_id_attr}><div class="result-card-title">#{idx} {title}</div>')
         card_type = card.get("type")
         if card_type == "table":
             blocks.append(card.get("html", ""))
@@ -68,10 +81,9 @@ def render_cards_to_html(cards: list[Card]) -> str:
             src = card.get("image_data_uri", "")
             blocks.append(f'<img class="result-img" src="{src}" alt="{title}">')
         else:
-            text = html.escape(str(card.get("text", ""))).replace("\n", "<br>")
-            blocks.append(f'<div class="result-text">{text}</div>')
+            blocks.append(_render_text(str(card.get("text", ""))))
 
-        blocks.append(_render_meta(card.get("meta", {})))
+        blocks.append(_render_meta(meta if isinstance(meta, dict) else {}))
         blocks.append("</section>")
     blocks.append("</div>")
     return "".join(blocks)
