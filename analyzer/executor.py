@@ -325,6 +325,7 @@ def _execute_plot(action: dict[str, Any], session_state: dict[str, Any]) -> list
     cards: list[Card] = []
     session_id = session_state.get("session_id")
     selected_cols = action.get("targets", {}).get("columns", [])
+    plot_mode = str(action.get("args", {}).get("plot_mode", "auto"))
 
     for did in dataset_ids:
         bundle = _dataset_bundle(did, session_state)
@@ -336,13 +337,16 @@ def _execute_plot(action: dict[str, Any], session_state: dict[str, Any]) -> list
             df=df,
             dataset_name=name,
             session_id=session_id,
-            args={"top_n": 20, "columns": selected_cols},
+            args={"top_n": 20, "columns": selected_cols, "mode": plot_mode},
         )
         if not plot_cards:
             cards.append(make_text_card(f"[{name}] 시각화 안내", "생성 가능한 차트를 찾지 못했습니다."))
             continue
         for c in plot_cards:
-            cards.append(make_chart_card(c.get("title", f"[{name}] 차트"), c.get("image_data_uri", ""), c.get("meta", {})))
+            if c.get("type") == "text":
+                cards.append(make_text_card(c.get("title", f"[{name}] 시각화 안내"), c.get("text", ""), c.get("meta", {})))
+            else:
+                cards.append(make_chart_card(c.get("title", f"[{name}] 차트"), c.get("image_data_uri", ""), c.get("meta", {})))
 
     if len(dataset_ids) >= 2 and len(cards) > 8:
         cards = cards[:8] + [make_text_card("시각화 안내", "차트가 많아 상위 8개만 표시했습니다.")]

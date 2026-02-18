@@ -25,7 +25,7 @@ INTENT_KEYWORDS: dict[str, list[str]] = {
     "filter": ["필터", "조건", "where", "이상", "이하"],
     "aggregate": ["평균", "합계", "group", "집계", "건수", "count", "mean"],
     "compare": ["비교", "compare", "차이", "다라", "달라", "차이점"],
-    "plot": ["그래프", "시각화", "plot", "차트"],
+    "plot": ["그래프", "시각화", "plot", "차트", "시계열", "추세", "trend", "timeseries", "히스토", "분포"],
     "export": ["저장", "내보내기", "export", "다운로드"],
     "help": ["도움", "help", "어떻게"],
     "columns": ["컬럼", "column", "columns"],
@@ -39,6 +39,9 @@ def _detect_intent(text: str) -> str:
     compare_terms = ["비교", "차이", "차이점", "달라", "다른점", "어떤게달라", "어떤게다른"]
     if any(normalize_text(t) in norm for t in compare_terms):
         return "compare"
+    plot_terms = ["그래프", "시각화", "plot", "차트", "시계열", "추세", "trend", "timeseries", "히스토", "분포"]
+    if any(normalize_text(t) in norm for t in plot_terms):
+        return "plot"
 
     best_intent = "summary"
     best_score = 0
@@ -108,6 +111,21 @@ def _is_column_ambiguous(ranked: list[tuple[str, float]], intent: str) -> bool:
     if intent in {"validate", "aggregate", "filter"} and top2 >= 0.5:
         return True
     return top1 < 0.80 or (top1 - top2) < 0.12
+
+
+
+
+def _detect_plot_mode(text: str) -> str:
+    norm = normalize_text(text)
+    if any(k in norm for k in ["결측", "결측률", "누락", "missing", "null"]):
+        return "missing"
+    if any(k in norm for k in ["히스토", "분포", "hist", "frequency"]):
+        return "hist"
+    if any(k in norm for k in ["시계열", "추세", "trend", "timeseries"]):
+        return "timeseries"
+    if any(k in norm for k in ["상위", "top", "빈도", "카테고리", "범주"]):
+        return "category"
+    return "auto"
 
 
 def _compare_clarify(session_state: dict[str, Any], text: str, dataset_targets: list[str]) -> dict[str, Any] | None:
@@ -183,6 +201,8 @@ def route(text: str, session_state: dict[str, Any]) -> list[dict[str, Any]]:
         args["limit"] = 20
     if intent == "aggregate":
         args["metric"] = "mean"
+    if intent == "plot":
+        args["plot_mode"] = _detect_plot_mode(text)
 
     action = {
         "intent": intent,
