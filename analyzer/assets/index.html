@@ -1,0 +1,528 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Analyzer</title>
+    <style>
+      :root {
+        --bg: #0f172a;
+        --panel: #111827;
+        --text: #e5e7eb;
+        --muted: #9ca3af;
+        --ok: #22c55e;
+        --fail: #ef4444;
+        --line: #1f2937;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: "Segoe UI", "Malgun Gothic", sans-serif;
+      }
+      .app { min-height: 100vh; display: grid; grid-template-rows: auto 1fr auto; }
+      .top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(17,24,39,.9);
+      }
+      .left-actions { display: flex; gap: 8px; align-items: center; }
+      .status {
+        padding: 6px 12px;
+        border-radius: 999px;
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .status.ok {
+        background: rgba(34,197,94,.15);
+        color: var(--ok);
+        border: 1px solid rgba(34,197,94,.35);
+      }
+      .status.fail {
+        background: rgba(239,68,68,.15);
+        color: var(--fail);
+        border: 1px solid rgba(239,68,68,.35);
+      }
+      .main {
+        display: grid;
+        grid-template-columns: 260px 1fr;
+        min-height: 0;
+      }
+      .sessions {
+        border-right: 1px solid var(--line);
+        background: rgba(17,24,39,.7);
+        padding: 10px;
+        overflow-y: auto;
+      }
+      .sessions.hidden { display: none; }
+      .session-item {
+        width: 100%;
+        text-align: left;
+        border: 1px solid #263244;
+        border-radius: 10px;
+        background: #141d2b;
+        color: var(--text);
+        padding: 10px;
+        margin-bottom: 8px;
+        cursor: pointer;
+      }
+      .session-item.active { border-color: #3b82f6; }
+      .session-meta { font-size: 12px; color: var(--muted); margin-top: 6px; }
+      .chat { padding: 20px; overflow-y: auto; }
+      .guide {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 14px;
+        margin-bottom: 14px;
+        color: var(--muted);
+      }
+      .active-dataset {
+        margin-top: 10px;
+        font-size: 13px;
+        color: #cbd5e1;
+      }
+      .dataset-list {
+        margin-top: 8px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .dataset-chip {
+        border: 1px solid #314055;
+        background: #162234;
+        color: #cbd5e1;
+        border-radius: 999px;
+        padding: 2px 4px 2px 10px;
+        font-size: 12px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .dataset-chip-main {
+        border: 0;
+        background: transparent;
+        color: inherit;
+        padding: 2px 0;
+      }
+      .dataset-chip-remove {
+        border: 0;
+        background: #334155;
+        color: #fff;
+        border-radius: 999px;
+        width: 20px;
+        height: 20px;
+        padding: 0;
+        line-height: 1;
+      }
+      .card-copy-btn {
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        border: 1px solid #475569;
+        background: #1e293b;
+        color: #dbeafe;
+        border-radius: 6px;
+        padding: 2px 8px;
+        font-size: 12px;
+      }
+      .dataset-chip.active {
+        border-color: #60a5fa;
+        background: #1d3a5a;
+      }
+      .messages { display: flex; flex-direction: column; gap: 10px; }
+      .bubble {
+        max-width: min(760px, 88%);
+        border-radius: 12px;
+        padding: 10px 12px;
+        white-space: pre-wrap;
+        word-break: break-word;
+        user-select: text;
+      }
+      .bubble.user { margin-left: auto; background: #1d4ed8; }
+      .bubble.assistant { margin-right: auto; background: #1f2937; border: 1px solid #374151; }
+
+      .result-cards { display: flex; flex-direction: column; gap: 10px; }
+      .result-card { border: 1px solid #334155; border-radius: 10px; padding: 10px; background: #0f172a; position: relative; user-select: text; }
+      .result-card-title { font-weight: 700; margin-bottom: 8px; color: #dbeafe; }
+      .result-text { white-space: pre-wrap; }
+      .result-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+      .result-table th, .result-table td { border: 1px solid #334155; padding: 6px 8px; text-align: left; vertical-align: top; user-select: text; }
+      .result-table th { background: #1e293b; }
+      .failure-actions { display: none; gap: 10px; margin-top: 10px; }
+      .composer {
+        border-top: 1px solid var(--line);
+        padding: 12px 16px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        background: rgba(17,24,39,.9);
+      }
+      button {
+        border: 1px solid #334155;
+        border-radius: 10px;
+        background: #1e293b;
+        color: var(--text);
+        padding: 8px 12px;
+        cursor: pointer;
+      }
+      button:hover { background: #273549; }
+      textarea {
+        flex: 1;
+        resize: none;
+        min-height: 42px;
+        max-height: 140px;
+        background: #0b1220;
+        border: 1px solid #243041;
+        border-radius: 10px;
+        color: var(--text);
+        padding: 10px 12px;
+        font-family: inherit;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <header class="top">
+        <div class="left-actions">
+          <button id="btn-new">새 채팅 (+)</button>
+          <button id="btn-toggle">세션 목록 토글</button>
+          <button id="btn-delete">세션 삭제</button>
+        </div>
+        <div id="status-badge" class="status fail">연결 실패</div>
+      </header>
+
+      <div class="main" id="main-layout">
+        <aside class="sessions" id="sessions"></aside>
+        <section class="chat" id="chat">
+          <div class="guide">
+            Analyzer Phase 4: 첨부 즉시 자동 로드 + Dataset Registry
+            <div class="active-dataset" id="active-dataset">Active: 없음</div>
+            <div class="dataset-list" id="dataset-list"></div>
+            <div class="failure-actions" id="failure-actions">
+              <button id="btn-install">Install/Build Engine</button>
+              <button id="btn-download">Download Model</button>
+            </div>
+          </div>
+          <div class="messages" id="messages"></div>
+        </section>
+      </div>
+
+      <footer class="composer">
+        <button id="btn-attach" title="파일 첨부">📎</button>
+        <textarea id="input" placeholder="메시지를 입력하세요. Enter 전송 / Shift+Enter 줄바꿈"></textarea>
+        <button id="btn-send" title="전송">▶</button>
+      </footer>
+    </div>
+
+    <script>
+      const state = {
+        connectionOk: false,
+        connectionText: '연결 실패',
+        sessions: [],
+        currentSessionId: null,
+        messages: [],
+        sessionsVisible: true,
+        datasets: [],
+        activeDataset: null,
+      };
+
+
+      let initInProgress = false;
+      let initDone = false;
+      let pollTimerId = null;
+      let pollInFlight = false;
+      let currentPollMs = 3000;
+
+      function $(id) { return document.getElementById(id); }
+      function toast(msg) { alert(msg || 'not implemented yet'); }
+
+      function backendReady(showToast = true) {
+        const ok = !!(window.pywebview && window.pywebview.api);
+        if (!ok && showToast) toast('백엔드 준비 중');
+        return ok;
+      }
+
+      async function callApi(method, ...args) {
+        if (!backendReady(true)) return null;
+        const fn = window.pywebview.api && window.pywebview.api[method];
+        if (typeof fn !== 'function') {
+          toast('백엔드 준비 중');
+          return null;
+        }
+        return await fn(...args);
+      }
+
+      function renderStatus() {
+        const badge = $('status-badge');
+        const text = (state.connectionText || '').trim();
+        const okByText = text === '연결 성공';
+        const ok = typeof state.connectionOk === 'boolean' ? state.connectionOk : okByText;
+        badge.textContent = ok ? '연결 성공' : '연결 실패';
+        badge.className = `status ${ok ? 'ok' : 'fail'}`;
+        $('failure-actions').style.display = ok ? 'none' : 'flex';
+      }
+
+      function renderSessions() {
+        const root = $('sessions');
+        root.innerHTML = '';
+        if (state.sessions.length === 0) {
+          const empty = document.createElement('div');
+          empty.className = 'session-meta';
+          empty.textContent = '세션이 없습니다. 새 채팅을 시작하세요.';
+          root.appendChild(empty);
+          return;
+        }
+
+        state.sessions.forEach((s) => {
+          const btn = document.createElement('button');
+          btn.className = `session-item ${s.session_id === state.currentSessionId ? 'active' : ''}`;
+          btn.innerHTML = `<div>${escapeHtml(s.title)}</div><div class="session-meta">메시지 ${s.message_count}</div>`;
+          btn.onclick = async () => {
+            const data = await callApi('switch_session', s.session_id);
+            if (!data) return;
+            applyState(data);
+          };
+          root.appendChild(btn);
+        });
+      }
+
+      function tableToTsv(table) {
+        const rows = [...table.querySelectorAll('tr')];
+        return rows
+          .map((row) =>
+            [...row.querySelectorAll('th,td')]
+              .map((c) => (c.innerText || '').replaceAll('\t', ' '))
+              .join('\t')
+          )
+          .join('\n');
+      }
+
+      async function copyText(text) {
+        try {
+          await navigator.clipboard.writeText(text || '');
+          toast('복사됨');
+        } catch {
+          toast('클립보드 복사 실패');
+        }
+      }
+
+      function decorateCards(bubble) {
+        bubble.querySelectorAll('.result-card').forEach((card) => {
+          const btn = document.createElement('button');
+          btn.className = 'card-copy-btn';
+          btn.textContent = 'Copy';
+          btn.onclick = async (e) => {
+            e.stopPropagation();
+            const table = card.querySelector('table');
+            if (table) {
+              await copyText(tableToTsv(table));
+              return;
+            }
+            const text = (card.querySelector('.result-text') || card).innerText || '';
+            await copyText(text);
+          };
+          card.appendChild(btn);
+        });
+      }
+
+      function renderMessages() {
+        const root = $('messages');
+        root.innerHTML = '';
+        state.messages.forEach((m) => {
+          const bubble = document.createElement('div');
+          bubble.className = `bubble ${m.role === 'user' ? 'user' : 'assistant'}`;
+          const text = m.text || '';
+          if (m.role === 'assistant' && /<[^>]+>/.test(text)) {
+            bubble.innerHTML = text;
+            decorateCards(bubble);
+          } else {
+            bubble.textContent = text;
+          }
+          root.appendChild(bubble);
+        });
+      }
+
+      function renderDatasets() {
+        const active = state.activeDataset;
+        const activeLabel = active
+          ? `Active: ${active.name} (${active.row_count}행 x ${active.col_count}열)`
+          : 'Active: 없음';
+        $('active-dataset').textContent = activeLabel;
+
+        const list = $('dataset-list');
+        list.innerHTML = '';
+        state.datasets.forEach((d) => {
+          const chip = document.createElement('div');
+          chip.className = `dataset-chip ${active && active.dataset_id === d.dataset_id ? 'active' : ''}`;
+
+          const mainBtn = document.createElement('button');
+          mainBtn.className = 'dataset-chip-main';
+          mainBtn.textContent = d.name;
+          mainBtn.title = d.notes || '';
+          mainBtn.onclick = async () => {
+            const data = await callApi('set_active_dataset', d.dataset_id);
+            if (!data) return;
+            applyState(data);
+          };
+
+          const removeBtn = document.createElement('button');
+          removeBtn.className = 'dataset-chip-remove';
+          removeBtn.textContent = '✕';
+          removeBtn.title = '세션에서 제거';
+          removeBtn.onclick = async (e) => {
+            e.stopPropagation();
+            const data = await callApi('detach_dataset', d.dataset_id);
+            if (!data) return;
+            applyState(data);
+          };
+
+          chip.appendChild(mainBtn);
+          chip.appendChild(removeBtn);
+          list.appendChild(chip);
+        });
+      }
+
+      function renderSessionPanelVisibility() {
+        const panel = $('sessions');
+        const main = $('main-layout');
+        if (state.sessionsVisible) {
+          panel.classList.remove('hidden');
+          main.style.gridTemplateColumns = '260px 1fr';
+        } else {
+          panel.classList.add('hidden');
+          main.style.gridTemplateColumns = '1fr';
+        }
+      }
+
+      function applyState(data) {
+        const prevConnectionOk = !!state.connectionOk;
+        const hasConnectionOk = Object.prototype.hasOwnProperty.call(data || {}, 'connection_ok');
+        const connectionText = (data && (data.connection_text || data.connection_status_text)) || state.connectionText || '연결 실패';
+        state.connectionText = connectionText;
+        if (hasConnectionOk) {
+          state.connectionOk = !!data.connection_ok;
+        } else {
+          state.connectionOk = connectionText === '연결 성공';
+        }
+        if (prevConnectionOk !== state.connectionOk) {
+          startPolling(state.connectionOk ? 10000 : 3000);
+        }
+
+        if (Object.prototype.hasOwnProperty.call(data || {}, 'sessions')) state.sessions = data.sessions || [];
+        if (Object.prototype.hasOwnProperty.call(data || {}, 'current_session_id')) state.currentSessionId = data.current_session_id || null;
+        if (Object.prototype.hasOwnProperty.call(data || {}, 'messages')) state.messages = data.messages || [];
+        if (Object.prototype.hasOwnProperty.call(data || {}, 'datasets')) state.datasets = data.datasets || [];
+        if (Object.prototype.hasOwnProperty.call(data || {}, 'active_dataset')) state.activeDataset = data.active_dataset || null;
+        renderSessions();
+        renderMessages();
+        renderDatasets();
+        renderStatus();
+      }
+
+
+      async function sendInputMessage() {
+        const text = $('input').value.trim();
+        if (!text) return;
+        const data = await callApi('send_message', text);
+        if (!data) return;
+        $('input').value = '';
+        applyState(data);
+      }
+
+      function escapeHtml(str) {
+        return (str || '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+      }
+
+
+      function startPolling(ms) {
+        const nextMs = Number(ms) || 3000;
+        if (pollTimerId && currentPollMs === nextMs) return;
+        if (pollTimerId) {
+          clearInterval(pollTimerId);
+          pollTimerId = null;
+        }
+        currentPollMs = nextMs;
+        pollTimerId = setInterval(pollConnectionStatus, currentPollMs);
+      }
+
+
+
+      async function pollConnectionStatus() {
+        if (pollInFlight) return;
+        pollInFlight = true;
+        try {
+          if (!backendReady(false)) return;
+          const data = await callApi('get_connection_status');
+          if (!data) return;
+          applyState(data || {});
+        } catch {
+          // polling 실패는 UX를 막지 않는다
+        } finally {
+          pollInFlight = false;
+        }
+      }
+
+      async function init() {
+        if (initDone || initInProgress) return;
+        initInProgress = true;
+
+        try {
+          const data = await callApi('get_initial_state');
+          if (!data) return;
+          applyState(data || {});
+          renderSessionPanelVisibility();
+          initDone = true;
+        } catch {
+          // initDone=false 유지 -> 재시도 루프에서 다시 시도
+        } finally {
+          initInProgress = false;
+          startPolling(state.connectionOk ? 10000 : 3000);
+        }
+      }
+
+      function initWhenReady() {
+        if (initDone) return;
+        if (window.pywebview && window.pywebview.api) {
+          init();
+        }
+        setTimeout(initWhenReady, 50);
+      }
+
+      $('btn-new').onclick = async () => { const data = await callApi('new_session'); if (data) applyState(data); };
+      $('btn-toggle').onclick = () => { state.sessionsVisible = !state.sessionsVisible; renderSessionPanelVisibility(); };
+      $('btn-delete').onclick = async () => {
+        if (!state.currentSessionId) return;
+        const data = await callApi('delete_session', state.currentSessionId);
+        if (data) applyState(data);
+      };
+      $('btn-attach').onclick = async () => { const data = await callApi('attach_files'); if (data) applyState(data); };
+      $('btn-send').onclick = async () => { await sendInputMessage(); };
+
+      $('btn-install').onclick = async () => { const r = await callApi('install_build_engine'); if (r) toast(r); };
+      $('btn-download').onclick = async () => { const r = await callApi('download_model'); if (r) toast(r); };
+
+      $('input').addEventListener('keydown', async (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          await sendInputMessage();
+        }
+      });
+
+      window.addEventListener('pywebviewready', initWhenReady);
+      window.addEventListener('DOMContentLoaded', initWhenReady);
+      window.addEventListener('beforeunload', () => {
+        if (pollTimerId) {
+          clearInterval(pollTimerId);
+          pollTimerId = null;
+        }
+      });
+      initWhenReady();
+    </script>
+  </body>
+</html>
