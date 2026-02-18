@@ -326,6 +326,9 @@ def _execute_plot(action: dict[str, Any], session_state: dict[str, Any]) -> list
     session_id = session_state.get("session_id")
     selected_cols = action.get("targets", {}).get("columns", [])
     plot_mode = str(action.get("args", {}).get("plot_mode", "auto"))
+    explicit_plot_cols = [str(c) for c in action.get("args", {}).get("plot_columns", []) if c]
+    if explicit_plot_cols:
+        selected_cols = explicit_plot_cols
 
     for did in dataset_ids:
         bundle = _dataset_bundle(did, session_state)
@@ -337,7 +340,7 @@ def _execute_plot(action: dict[str, Any], session_state: dict[str, Any]) -> list
             df=df,
             dataset_name=name,
             session_id=session_id,
-            args={"top_n": 20, "columns": selected_cols, "mode": plot_mode},
+            args={"top_n": int(action.get("args", {}).get("top_n", 20)), "columns": selected_cols, "mode": plot_mode},
         )
         if not plot_cards:
             cards.append(make_text_card(f"[{name}] 시각화 안내", "생성 가능한 차트를 찾지 못했습니다."))

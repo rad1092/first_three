@@ -119,13 +119,50 @@ def _detect_plot_mode(text: str) -> str:
     norm = normalize_text(text)
     if any(k in norm for k in ["결측", "결측률", "누락", "missing", "null"]):
         return "missing"
-    if any(k in norm for k in ["히스토", "분포", "hist", "frequency"]):
+    if any(k in norm for k in ["분포", "상위", "top", "빈도", "bar", "카테고리", "범주"]):
+        return "category"
+    if any(k in norm for k in ["히스토그램", "히스토", "hist", "frequency"]):
         return "hist"
     if any(k in norm for k in ["시계열", "추세", "trend", "timeseries"]):
         return "timeseries"
-    if any(k in norm for k in ["상위", "top", "빈도", "카테고리", "범주"]):
-        return "category"
     return "auto"
+
+
+def _looks_like_plot_column_request(text: str) -> bool:
+    cleaned = normalize_text(text)
+    for k in ["그래프", "시각화", "plot", "차트", "분포", "top", "상위", "빈도", "bar", "히스토그램", "히스토", "hist", "시계열", "추세", "trend", "missing", "null", "결측", "결측률", "누락", "show", "보기", "보여줘", "그려줘", "top20", "top10"]:
+        cleaned = cleaned.replace(normalize_text(k), "")
+    cleaned = re.sub(r"[0-9\s]+", "", cleaned)
+    return len(cleaned) >= 2
+
+
+def _plot_column_resolution(text: str, all_columns: list[str]) -> tuple[list[str], dict[str, Any] | None, bool]:
+    if not all_columns:
+        return [], None, False
+    ranked = rank_column_candidates(text, all_columns)
+    strong = [(c, s) for c, s in ranked if s >= 0.45]
+    if not strong:
+        return [], None, False
+
+    top_col, top_score = strong[0]
+    top2 = strong[1][1] if len(strong) > 1 else 0.0
+    explicit = top_score >= 0.75 or (top_score >= 0.6 and (top_score - top2) >= 0.15)
+    ambiguous = len(strong) >= 2 and (top_score - top2) < 0.12
+
+    if explicit and not ambiguous:
+        return [top_col], None, False
+
+    clarify = {
+        "kind": "column",
+        "question": "요청한 컬럼을 정확히 찾지 못했어요. 후보(1/2/3)를 골라 주세요.",
+        "candidates": [{"id": col, "label": col, "score": round(score, 4)} for col, score in strong[:3]],
+        "context": {
+            "intent": "plot",
+            "raw_query": text,
+            "all_candidates": [{"id": col, "label": col, "score": round(score, 4)} for col, score in strong[:10]],
+        },
+    }
+    return [c["id"] for c in clarify["candidates"]], clarify, True
 
 
 def _compare_clarify(session_state: dict[str, Any], text: str, dataset_targets: list[str]) -> dict[str, Any] | None:
@@ -154,12 +191,12 @@ def route(text: str, session_state: dict[str, Any]) -> list[dict[str, Any]]:
     needs_clarification = False
     clarify = None
     selected_columns: list[str] = []
+    all_columns = _collect_columns_for_targets(dataset_targets, session_state)
 
     if intent == "compare":
         clarify = _compare_clarify(session_state, text, dataset_targets)
         needs_clarification = clarify is not None
     else:
-        all_columns = _collect_columns_for_targets(dataset_targets, session_state)
         ranked = rank_column_candidates(text, all_columns)
         strong = [(c, s) for c, s in ranked if s >= 0.45]
         requires_column_target = intent in {"validate", "filter", "aggregate"}
@@ -203,6 +240,26 @@ def route(text: str, session_state: dict[str, Any]) -> list[dict[str, Any]]:
         args["metric"] = "mean"
     if intent == "plot":
         args["plot_mode"] = _detect_plot_mode(text)
+        args["top_n"] = 20
+        plot_cols, plot_clarify, plot_needs = _plot_column_resolution(text, all_columns)
+        args["plot_columns"] = plot_cols
+        if plot_needs:
+            needs_clarification = True
+            clarify = plot_clarify
+            selected_columns = plot_cols
+        elif not plot_cols and args["plot_mode"] in {"category", "hist"} and _looks_like_plot_column_request(text) and all_columns:
+            needs_clarification = True
+            clarify = {
+                "kind": "column",
+                "question": "요청한 컬럼을 찾지 못했어요. 후보(1/2/3)를 골라 주세요.",
+                "candidates": [{"id": col, "label": col, "score": 0.0} for col in all_columns[:3]],
+                "context": {
+                    "intent": "plot",
+                    "raw_query": text,
+                    "all_candidates": [{"id": col, "label": col, "score": 0.0} for col in all_columns[:10]],
+                },
+            }
+            selected_columns = [c["id"] for c in clarify["candidates"]]
 
     action = {
         "intent": intent,

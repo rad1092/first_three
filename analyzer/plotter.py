@@ -108,6 +108,46 @@ def _time_column(df: pd.DataFrame) -> tuple[str | None, pd.Series | None]:
     return None, None
 
 
+def _single_column_chart(
+    df: pd.DataFrame,
+    dataset_name: str,
+    out_dir: Path,
+    name_slug: str,
+    stamp: str,
+    column: str,
+    mode: str,
+    title_hist: str,
+    title_category: str,
+) -> dict[str, Any] | None:
+    if column not in df.columns:
+        return None
+
+    if mode in {"category"} or (mode == "auto" and not pd.api.types.is_numeric_dtype(df[column])):
+        vc = df[column].astype(str).value_counts().head(20)
+        if vc.empty:
+            return None
+        fig, ax = plt.subplots(figsize=(8, 4.5))
+        ax.bar(vc.index.astype(str), vc.values)
+        ax.set_title(f"[{dataset_name}] {title_category}: {column}")
+        ax.tick_params(axis="x", rotation=45)
+        path = out_dir / f"{name_slug}_{stamp}_category.png"
+        uri = _fig_to_data_uri(fig, path)
+        plt.close(fig)
+        return {"type": "chart", "title": f"[{dataset_name}] {title_category}: {column}", "image_data_uri": uri, "meta": {"kind": "category_top", "column": str(column), "top_n": 20, "path": str(path)}}
+
+    series = pd.to_numeric(df[column], errors="coerce").dropna()
+    if series.empty:
+        return None
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    ax.hist(series.values, bins=30)
+    ax.set_title(f"[{dataset_name}] {title_hist}: {column}")
+    ax.set_xlabel(str(column))
+    path = out_dir / f"{name_slug}_{stamp}_hist.png"
+    uri = _fig_to_data_uri(fig, path)
+    plt.close(fig)
+    return {"type": "chart", "title": f"[{dataset_name}] {title_hist}: {column}", "image_data_uri": uri, "meta": {"kind": "histogram", "column": str(column), "bins": 30, "path": str(path)}}
+
+
 def create_plot_cards(df: pd.DataFrame, dataset_name: str, session_id: str | None, args: dict[str, Any]) -> list[dict[str, Any]]:
     if plt is None:
         return []
@@ -127,6 +167,13 @@ def create_plot_cards(df: pd.DataFrame, dataset_name: str, session_id: str | Non
     sess = _slug(session_id or "session")
     name_slug = _slug(dataset_name)
     out_dir = analyzer_home() / "results" / "charts" / sess
+
+    explicit_col = next((c for c in preferred_cols if c in df.columns), None)
+    if explicit_col and mode in {"auto", "hist", "category"}:
+        chosen_mode = mode if mode in {"hist", "category"} else "auto"
+        single = _single_column_chart(df, dataset_name, out_dir, name_slug, stamp, explicit_col, chosen_mode, title_hist, title_category)
+        if single is not None:
+            return [single]
 
     missing = (df.isna().mean() * 100).sort_values(ascending=False)
     missing = missing[missing > 0].head(top_n)
