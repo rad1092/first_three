@@ -232,6 +232,10 @@
         activeDataset: null,
       };
 
+
+      let initStarted = false;
+      let pollTimerId = null;
+
       function $(id) { return document.getElementById(id); }
       function toast(msg) { alert(msg || 'not implemented yet'); }
 
@@ -420,10 +424,29 @@
       }
 
       async function init() {
-        const data = await window.pywebview.api.get_initial_state();
-        applyState(data || {});
+        if (initStarted) return;
+        initStarted = true;
+
+        try {
+          const data = await window.pywebview.api.get_initial_state();
+          applyState(data || {});
+        } catch {
+          // init 실패해도 polling으로 회복 시도
+        }
+
         renderSessionPanelVisibility();
-        setInterval(pollConnectionStatus, 3000);
+        if (!pollTimerId) {
+          pollTimerId = setInterval(pollConnectionStatus, 3000);
+        }
+      }
+
+      function initWhenReady() {
+        if (initStarted) return;
+        if (window.pywebview && window.pywebview.api) {
+          init();
+          return;
+        }
+        setTimeout(initWhenReady, 50);
       }
 
       $('btn-new').onclick = async () => applyState(await window.pywebview.api.new_session());
@@ -446,6 +469,7 @@
       });
 
       window.addEventListener('pywebviewready', init);
+      window.addEventListener('DOMContentLoaded', initWhenReady);
     </script>
   </body>
 </html>
