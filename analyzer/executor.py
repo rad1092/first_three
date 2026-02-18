@@ -457,6 +457,100 @@ def _steps_for_intent(intent: str, dataset_names: list[str], columns: list[str])
     return steps
 
 
+def _plot_trace_from_cards(
+    action: dict[str, Any],
+    session_state: dict[str, Any],
+    dataset_ids: list[str],
+    dataset_names: list[str],
+    cards: list[Card],
+) -> ExecutionTrace:
+    args = action.get("args", {}) if isinstance(action.get("args"), dict) else {}
+    plot_mode = str(args.get("plot_mode", "auto"))
+    top_n = int(args.get("top_n", 20))
+    columns = [str(c) for c in args.get("plot_columns", []) if c] or [str(c) for c in action.get("targets", {}).get("columns", []) if c]
+
+    datasets = [{"dataset_id": did, "name": dataset_names[idx] if idx < len(dataset_names) else did} for idx, did in enumerate(dataset_ids)]
+    lines = ["import pandas as pd", "", "# 앱 내부: dataset_id -> DataFrame", f"df = registry.get_df('{dataset_ids[0] if dataset_ids else '<dataset_id>'}')"]
+    steps = [f"대상 데이터셋 확인: {', '.join(dataset_names) if dataset_names else '없음'}", f"plot_mode={plot_mode}"]
+
+    first = cards[0] if cards else {}
+    meta = first.get("meta", {}) if isinstance(first.get("meta", {}), dict) else {}
+    kind = str(meta.get("kind") or "")
+
+    trace_args = dict(args)
+    if kind:
+        trace_args["result_kind"] = kind
+
+    if first.get("type") == "text" and "시간 컬럼" in str(first.get("text", "")):
+        steps.extend(["시간 컬럼 후보 탐지", "탐지 실패", "시계열 생략"])
+        lines.extend([
+            "time_col = detect_time_column(df)  # datetime/object/epoch 규칙 적용",
+            "if time_col is None:",
+            "    print('시간 컬럼을 못 찾아 생략')",
+        ])
+    elif kind == "missing_top":
+        trace_args["top_n"] = int(meta.get("top_n", top_n))
+        steps.extend([f"결측률 계산: missing_rate = df.isna().mean()*100", f"상위 {trace_args['top_n']}개 선택 후 막대그래프 생성"])
+        lines.extend([
+            "missing_rate = (df.isna().mean() * 100).round(2)",
+            f"top_n = {trace_args['top_n']}",
+            "target = missing_rate[missing_rate > 0].sort_values(ascending=False).head(top_n)",
+            "ax = target.plot(kind='bar', title='Missing TopN')",
+            "fig = ax.get_figure(); fig.tight_layout()",
+        ])
+    elif kind == "category_top":
+        col = str(meta.get("column") or (columns[0] if columns else "<column>"))
+        trace_args["column"] = col
+        trace_args["top_n"] = int(meta.get("top_n", top_n))
+        steps.extend([f"범주 컬럼 선택: {col}", f"빈도 상위 {trace_args['top_n']}개 계산 후 막대그래프 생성"])
+        lines.extend([
+            f"col = {col!r}",
+            f"top_n = {trace_args['top_n']}",
+            "vc = df[col].astype(str).value_counts().head(top_n)",
+            "ax = vc.plot(kind='bar', title='Category TopN')",
+            "fig = ax.get_figure(); fig.tight_layout()",
+        ])
+    elif kind == "histogram":
+        col = str(meta.get("column") or (columns[0] if columns else "<column>"))
+        bins = int(meta.get("bins", 30))
+        trace_args["column"] = col
+        trace_args["bins"] = bins
+        steps.extend([f"히스토그램 컬럼 선택: {col}", f"bins={bins}로 분포 히스토그램 생성"])
+        lines.extend([
+            f"col = {col!r}",
+            f"bins = {bins}",
+            "series = pd.to_numeric(df[col], errors='coerce').dropna()",
+            "ax = series.plot(kind='hist', bins=bins, title='Histogram')",
+            "fig = ax.get_figure(); fig.tight_layout()",
+        ])
+    elif kind == "timeseries_count_daily":
+        tcol = str(meta.get("time_column") or "<time_column>")
+        trace_args["time_col"] = tcol
+        steps.extend([f"시간 컬럼 탐지: {tcol}", "일 단위로 floor 후 count 집계", "시계열 선 그래프 생성"])
+        lines.extend([
+            f"time_col = {tcol!r}",
+            "ts = pd.to_datetime(df[time_col], errors='coerce').dropna()",
+            "daily = ts.dt.floor('D').value_counts().sort_index()",
+            "ax = daily.plot(kind='line', title='Timeseries daily count')",
+            "fig = ax.get_figure(); fig.tight_layout()",
+        ])
+    else:
+        steps.append("plot 결과 기반 trace를 일반 규칙으로 기록")
+        lines.extend(_code_lines_for_intent("plot", dataset_ids, columns, args))
+
+    return {
+        "trace_id": str(uuid4()),
+        "session_id": session_state.get("session_id"),
+        "intent": "plot",
+        "datasets": datasets,
+        "columns": columns,
+        "args": trace_args,
+        "steps": steps + ["결과 카드를 렌더링하여 채팅에 출력"],
+        "code": "\n".join(lines),
+        "created_at": _utc_now_iso(),
+    }
+
+
 def _build_trace(action: dict[str, Any], session_state: dict[str, Any], dataset_ids: list[str], dataset_names: list[str]) -> ExecutionTrace:
     intent = str(action.get("intent") or "summary")
     columns = [str(c) for c in action.get("targets", {}).get("columns", []) if c]
@@ -497,20 +591,28 @@ def execute_actions(actions: list[dict[str, Any]], session_state: dict[str, Any]
             if bundle:
                 names_by_id[did] = bundle[0]
 
-        trace = _build_trace(action, session_state, dataset_ids, [names_by_id.get(did, did) for did in dataset_ids])
-        traces.append(trace)
-        trace_id = trace["trace_id"]
+        dataset_names = [names_by_id.get(did, did) for did in dataset_ids]
 
         if intent == "plot":
             new_cards = _execute_plot(action, session_state)
+            trace = _plot_trace_from_cards(action, session_state, dataset_ids, dataset_names, new_cards)
+            traces.append(trace)
+            trace_id = trace["trace_id"]
             cards.extend(new_cards)
             card_trace_ids.extend([trace_id for _ in new_cards])
             continue
         if intent == "compare":
             new_cards = _execute_compare(action, session_state)
+            trace = _build_trace(action, session_state, dataset_ids, dataset_names)
+            traces.append(trace)
+            trace_id = trace["trace_id"]
             cards.extend(new_cards)
             card_trace_ids.extend([trace_id for _ in new_cards])
             continue
+
+        trace = _build_trace(action, session_state, dataset_ids, dataset_names)
+        traces.append(trace)
+        trace_id = trace["trace_id"]
 
         if not dataset_ids:
             new_cards = [make_text_card("실행 실패", "분석할 데이터셋이 없습니다. 파일을 먼저 첨부해 주세요.")]
