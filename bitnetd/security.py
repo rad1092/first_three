@@ -4,12 +4,15 @@ import hmac
 import secrets
 from pathlib import Path
 
-from fastapi import Header, HTTPException, status
+from fastapi import HTTPException, Security, status
+from fastapi.security import APIKeyHeader
 
 from shared.constants import bitnet_home, ensure_dirs
 
 TOKEN_HEADER_NAME = "X-Local-Token"
 _TOKEN_FILE_NAME = "token.txt"
+
+_api_key_header = APIKeyHeader(name=TOKEN_HEADER_NAME, auto_error=False)
 
 
 def token_file_path() -> Path:
@@ -43,7 +46,7 @@ def verify_token(provided_token: str) -> bool:
 
 
 async def require_token(
-    x_local_token: str | None = Header(default=None, alias=TOKEN_HEADER_NAME)
+    x_local_token: str | None = Security(_api_key_header),
 ) -> str:
     """FastAPI dependency for token-protected endpoints."""
     if not x_local_token or not verify_token(x_local_token):

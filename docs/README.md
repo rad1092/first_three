@@ -24,3 +24,9 @@ safe mode에서는 추론 성능이 다소 느려질 수 있습니다.
 `/generate`는 `prompt` 기반 요청으로 `stream=false`이면 `{text, meta}` JSON, `stream=true`이면 SSE(`meta -> delta... -> done`)를 반환해야 합니다.
 SSE의 `delta` 이벤트 payload는 반드시 `{"delta":"..."}` 단일 필드여야 하며, 최종 `done.text`와 누적 delta 텍스트가 같아야 합니다.
 `timeout_ms` 또는 `stop` 조건 발생 시 `meta.stop_reason`이 각각 `timeout`/`stop`으로 구분되어야 합니다.
+
+## Swagger 토큰 입력
+
+`/docs`에서 **Authorize**를 누른 뒤 `%LOCALAPPDATA%\BitNet\config\token.txt` 값을 `X-Local-Token`으로 입력하면 됩니다.
+한 번 인증하면 `/generate`와 `/clients/*` 요청에 헤더가 자동 적용되어 테스트할 수 있습니다.
+`/health`는 기존처럼 토큰 없이 호출 가능합니다.
