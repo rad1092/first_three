@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from contextlib import suppress
 from datetime import datetime, timezone
 from time import monotonic
@@ -17,7 +18,13 @@ from sse_starlette.sse import EventSourceResponse
 
 from shared.constants import bitnet_home, ensure_dirs
 
-from .llm import BitNetModelService, CompilerMissingError
+from .llm import (
+    BitNetModelService,
+    CompilerMissingError,
+    build_streamer,
+    prepare_generation_kwargs,
+    seed_torch,
+)
 from .security import get_or_create_token, require_token
 from .state import AllowedAppName, ServerState
 
@@ -26,14 +33,22 @@ logger = logging.getLogger(__name__)
 PRUNE_INTERVAL_SECONDS = 1.0
 CLIENT_TTL_SECONDS = 15
 
+DEFAULT_GENERATE_OPTIONS = {
+    "max_tokens": 256,
+    "temperature": 0.7,
+    "top_p": 0.95,
+    "seed": None,
+    "repeat_penalty": 1.1,
+    "stop": [],
+    "timeout_ms": 60_000,
+}
+
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="bitnetd", version="0.2.0-phase1-2")
+app = FastAPI(title="bitnetd", version="0.2.0-phase8.2")
 state = ServerState()
 model_service = BitNetModelService()
 _prune_task: asyncio.Task[None] | None = None
-
-
 
 
 def _resolve_snapshot_path() -> str:
@@ -45,6 +60,7 @@ def _resolve_snapshot_path() -> str:
             if snapshot_path:
                 return snapshot_path
     return str(bitnet_home() / "models")
+
 
 class RegisterClientRequest(BaseModel):
     client_id: UUID
@@ -102,7 +118,11 @@ async def on_startup() -> None:
         logger.error("BitNet model load failed at startup: %s", exc)
         state.status = "error"
         reasons = ["model_load_failed"]
-        if isinstance(exc, CompilerMissingError) or "cl.exe" in str(exc).lower() or "cl is not found" in str(exc).lower():
+        if (
+            isinstance(exc, CompilerMissingError)
+            or "cl.exe" in str(exc).lower()
+            or "cl is not found" in str(exc).lower()
+        ):
             reasons.append("compiler_missing")
         state.reasons = reasons
 
@@ -219,7 +239,10 @@ async def generate(payload: GenerateRequest, _: str = Depends(require_token)):
     stream_manages_finally = False
 
     try:
-        loaded = await asyncio.to_thread(model_service.load_if_needed, DEFAULT_MODEL_ID, "main")
+        if not model_service.is_loaded:
+            snapshot_path = _resolve_snapshot_path()
+            await asyncio.to_thread(model_service.load_if_needed, snapshot_path)
+        loaded = model_service.loaded
         state.status = "ready"
         state.reasons = []
 
@@ -349,10 +372,7 @@ async def generate(payload: GenerateRequest, _: str = Depends(require_token)):
                     )
                     yield {
                         "event": "error",
-                        "data": json.dumps(
-                            {"message": str(exc), "meta": error_meta},
-                            ensure_ascii=False,
-                        ),
+                        "data": json.dumps({"message": str(exc), "meta": error_meta}, ensure_ascii=False),
                     }
                 finally:
                     await _mark_generation_end()
@@ -395,15 +415,12 @@ async def generate(payload: GenerateRequest, _: str = Depends(require_token)):
         state.reasons = ["model_load_failed"]
         error_meta = _build_meta(
             req=payload,
-            model=DEFAULT_MODEL_ID,
+            model=loaded.model_id if model_service.is_loaded else "unknown",
             elapsed_ms=0,
             text="",
             stop_reason="error",
         )
-        return JSONResponse(
-            status_code=500,
-            content={"text": "", "meta": error_meta, "error": str(exc)},
-        )
+        return JSONResponse(status_code=500, content={"text": "", "meta": error_meta, "error": str(exc)})
     finally:
         if not stream_manages_finally:
             await _mark_generation_end()
