@@ -70,11 +70,23 @@ class BitnetClient:
         self,
         *,
         prompt: str,
-        max_tokens: int = 96,
-        temperature: float = 0.5,
-        top_p: float = 0.9,
+        max_tokens: int = 72,
+        temperature: float = 0.4,
+        top_p: float = 0.85,
         timeout_ms: int = 90000,
+        stop: list[str] | None = None,
     ) -> tuple[bool, str]:
+        stop_list = stop or [
+            "```",
+            "```python",
+            "def ",
+            "import ",
+            "OUTPUT",
+            "desired_result",
+            "System:",
+            "User:",
+            "AI:",
+        ]
         body = {
             "prompt": prompt,
             "stream": False,
@@ -82,6 +94,7 @@ class BitnetClient:
             "temperature": temperature,
             "top_p": top_p,
             "timeout_ms": timeout_ms,
+            "stop": stop_list,
         }
         try:
             headers = self._headers()

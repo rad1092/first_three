@@ -554,15 +554,21 @@ class AnalyzerApi:
 
     def _build_dataset_missing_prompt(self, user_text: str) -> str:
         return (
-            "한국어로 짧고 친절하게 답해 주세요. 사용자는 분석을 원하지만 현재 활성 데이터셋이 없습니다. "
-            "왜 파일 첨부가 필요한지 1문장으로 설명하고, 다음 행동 1~3개를 번호로 제안해 주세요. "
+            "반드시 한국어만 사용하세요. 영어 단어/문장 금지. "
+            "코드, 마크다운, ``` , def , import , JSON 출력 금지. "
+            "AI:, System:, User: 같은 접두 금지. "
+            "총 2~4문장(최대 6문장)으로만 답하세요. "
+            "첫 문장은 파일 첨부가 필요한 이유를 1문장으로 설명하고, 이어서 1) 2) 3) 형식으로 다음 행동을 제시하세요. "
             f"사용자 입력: {user_text}"
         )
 
     def _build_general_chat_prompt(self, user_text: str) -> str:
         return (
-            "한국어로 짧고 친절하게 대화해 주세요. 현재 데이터셋이 없어도 가능한 일반 설명/안내 중심으로 답해 주세요. "
-            "마지막에 다음 질문을 유도하는 한 문장을 덧붙여 주세요. "
+            "반드시 한국어만 사용하세요. 영어 단어/문장 금지. "
+            "코드, 마크다운, ``` , def , import , JSON 출력 금지. "
+            "AI:, System:, User: 같은 접두 금지. "
+            "짧고 친절하게 2~4문장(최대 6문장)으로만 답하세요. "
+            "불필요한 예시/목록/반복 없이, 마지막 문장은 다음 질문을 자연스럽게 유도하세요. "
             f"사용자 입력: {user_text}"
         )
 
@@ -574,10 +580,21 @@ class AnalyzerApi:
         )
         ok, reply = self._bitnet_client.generate_text(
             prompt=prompt,
-            max_tokens=96,
-            temperature=0.6 if guidance_mode else 0.7,
-            top_p=0.9,
+            max_tokens=72,
+            temperature=0.35 if guidance_mode else 0.45,
+            top_p=0.85,
             timeout_ms=90000,
+            stop=[
+                "```",
+                "```python",
+                "def ",
+                "import ",
+                "OUTPUT",
+                "desired_result",
+                "System:",
+                "User:",
+                "AI:",
+            ],
         )
         if ok:
             self._append_assistant(reply)
@@ -618,7 +635,6 @@ class AnalyzerApi:
         assert self.current_session_id is not None
 
         if self._chat_inflight:
-            self._append_assistant_dedup("이전 요청을 처리 중이에요. 잠시만 기다려 주세요.", window_seconds=3.0)
             return self._state()
 
         before = load_sessions()
