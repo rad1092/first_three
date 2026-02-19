@@ -18,7 +18,7 @@ if _WINDOWS_MISSING_CL:
 
 import torch
 import transformers
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, TextIteratorStreamer
 
 from .model_store import DEFAULT_MODEL_ID, DEFAULT_REVISION, resolve_model_snapshot
 
@@ -137,3 +137,35 @@ class BitNetModelService:
             )
             return self._loaded
 
+
+def seed_torch(seed: int | None) -> None:
+    if seed is None:
+        return
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+
+def prepare_generation_kwargs(
+    *,
+    max_tokens: int,
+    temperature: float,
+    top_p: float,
+    repeat_penalty: float,
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "max_new_tokens": max_tokens,
+        "repetition_penalty": repeat_penalty,
+    }
+    if temperature <= 0:
+        kwargs["do_sample"] = False
+    else:
+        kwargs["do_sample"] = True
+        kwargs["temperature"] = temperature
+        kwargs["top_p"] = top_p
+    return kwargs
+
+
+def build_streamer(tokenizer: Any) -> TextIteratorStreamer:
+    return TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
