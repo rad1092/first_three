@@ -41,6 +41,7 @@ class LoadedModel:
 class BitNetModelService:
     def __init__(self) -> None:
         self._loaded: LoadedModel | None = None
+        self._loaded_cpu: LoadedModel | None = None
         self._lock = threading.Lock()
 
     @property
@@ -165,6 +166,37 @@ class BitNetModelService:
                 device=intended_device,
             )
             return self._loaded
+
+
+    def load_cpu_fallback(
+        self,
+        snapshot_path: str,
+        model_id: str = DEFAULT_MODEL_ID,
+        revision: str = DEFAULT_REVISION,
+    ) -> LoadedModel:
+        if self._loaded_cpu is not None:
+            return self._loaded_cpu
+
+        with self._lock:
+            if self._loaded_cpu is not None:
+                return self._loaded_cpu
+
+            tokenizer = self._load_tokenizer(snapshot_path)
+            model_class = self._resolve_model_class()
+            model = model_class.from_pretrained(snapshot_path)
+            model = model.to("cpu")
+            model.eval()
+
+            loaded = LoadedModel(
+                model_id=model_id,
+                revision=revision,
+                snapshot_path=snapshot_path,
+                tokenizer=tokenizer,
+                model=model,
+                device="cpu",
+            )
+            self._loaded_cpu = loaded
+            return loaded
 
 
 def seed_torch(seed: int | None) -> None:
