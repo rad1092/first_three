@@ -11,7 +11,7 @@ from shared.constants import BITNETD_BASE_URL, bitnet_home
 
 HEALTH_URL = f"{BITNETD_BASE_URL}/health"
 REQUEST_TIMEOUT_SECONDS = 1.0
-GENERATE_TIMEOUT_SECONDS = 45.0
+GENERATE_TIMEOUT_SECONDS = 100.0
 CLIENT_HEARTBEAT_SECONDS = 5.0
 
 
@@ -70,10 +70,10 @@ class BitnetClient:
         self,
         *,
         prompt: str,
-        max_tokens: int = 256,
+        max_tokens: int = 96,
         temperature: float = 0.5,
         top_p: float = 0.9,
-        timeout_ms: int = 25000,
+        timeout_ms: int = 90000,
     ) -> tuple[bool, str]:
         body = {
             "prompt": prompt,
@@ -84,21 +84,45 @@ class BitnetClient:
             "timeout_ms": timeout_ms,
         }
         try:
+            headers = self._headers()
+        except FileNotFoundError:
+            return False, "토큰 파일을 찾을 수 없어요. %LOCALAPPDATA%\\BitNet\\config\\token.txt 를 확인해 주세요."
+        except OSError:
+            return False, "토큰 파일을 읽지 못했어요. 파일 권한과 내용을 확인해 주세요."
+
+        try:
             response = requests.post(
                 f"{BITNETD_BASE_URL}/generate",
                 json=body,
-                headers=self._headers(),
+                headers=headers,
                 timeout=GENERATE_TIMEOUT_SECONDS,
             )
-            if response.status_code != 200:
-                return False, "엔진 연결이 필요해요. 우측 상단 연결 상태를 확인해 주세요."
-            data = response.json()
-            text = str(data.get("text", "")).strip()
-            if not text:
-                return False, "엔진 연결이 필요해요. 우측 상단 연결 상태를 확인해 주세요."
-            return True, text
-        except (requests.RequestException, ValueError):
+        except requests.Timeout:
+            return False, "응답이 느려요. 잠시 기다리거나 생성 길이(max_tokens)를 줄여서 다시 시도해 주세요."
+        except requests.RequestException:
             return False, "엔진 연결이 필요해요. 우측 상단 연결 상태를 확인해 주세요."
+
+        if response.status_code == 401:
+            return False, "토큰 인증에 실패했어요. /docs Authorize 또는 token.txt 값을 확인해 주세요."
+        if response.status_code >= 500:
+            return False, "엔진 내부 오류가 발생했어요. 잠시 후 다시 시도해 주세요."
+        if response.status_code != 200:
+            return False, "요청 처리에 실패했어요. 엔진 연결 상태와 입력값을 확인해 주세요."
+
+        try:
+            data = response.json()
+        except ValueError:
+            return False, "엔진 응답을 해석하지 못했어요. 잠시 후 다시 시도해 주세요."
+
+        text = str(data.get("text", "")).strip()
+        if text:
+            return True, text
+
+        meta = data.get("meta") if isinstance(data, dict) else {}
+        stop_reason = str((meta or {}).get("stop_reason", "")).strip().lower()
+        if stop_reason == "timeout":
+            return False, "응답 시간이 초과됐어요. 잠시 기다리거나 max_tokens를 줄여 다시 시도해 주세요."
+        return False, "엔진이 빈 응답을 반환했어요. 잠시 후 다시 시도해 주세요."
 
 
 _bitnet_client = BitnetClient()
