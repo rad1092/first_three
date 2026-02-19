@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from .model_store import DEFAULT_MODEL_ID, DEFAULT_REVISION, resolve_model_snapshot
 
@@ -50,13 +50,12 @@ class BitNetModelService:
             if self._loaded is not None:
                 return self._loaded
 
+            logger.info("Starting model load model_id=%s revision=%s", model_id, revision)
             snapshot_path = resolve_model_snapshot(model_id=model_id, revision=revision)
-            tokenizer = AutoTokenizer.from_pretrained(
-                str(snapshot_path),
-                trust_remote_code=True,
-            )
+            tokenizer = AutoTokenizer.from_pretrained(str(snapshot_path), trust_remote_code=True)
 
             device = "cuda" if torch.cuda.is_available() else "cpu"
+            logger.info("Attempting model load on device=%s", device)
             try:
                 model = AutoModelForCausalLM.from_pretrained(
                     str(snapshot_path),
@@ -73,6 +72,7 @@ class BitNetModelService:
                     )
                     model = model.to(device)
                 else:
+                    logger.error("CPU model load failed: %s", exc)
                     raise
 
             model.eval()
@@ -84,43 +84,11 @@ class BitNetModelService:
                 model=model,
                 device=device,
             )
+            logger.info(
+                "Model load completed model_id=%s revision=%s device=%s snapshot_path=%s",
+                model_id,
+                revision,
+                device,
+                snapshot_path,
+            )
             return self._loaded
-
-    def prepare_generation_kwargs(
-        self,
-        *,
-        max_tokens: int,
-        temperature: float,
-        top_p: float,
-        repeat_penalty: float,
-        timeout_ms: int | None,
-    ) -> dict[str, Any]:
-        kwargs: dict[str, Any] = {
-            "max_new_tokens": max_tokens,
-            "repetition_penalty": repeat_penalty,
-        }
-
-        if temperature <= 0:
-            kwargs["do_sample"] = False
-        else:
-            kwargs["do_sample"] = True
-            kwargs["temperature"] = temperature
-            kwargs["top_p"] = top_p
-
-        if timeout_ms and timeout_ms > 0:
-            kwargs["max_time"] = timeout_ms / 1000.0
-
-        return kwargs
-
-
-def seed_torch(seed: int | None) -> None:
-    if seed is None:
-        return
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-
-
-def build_streamer(tokenizer: Any) -> TextIteratorStreamer:
-    return TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
