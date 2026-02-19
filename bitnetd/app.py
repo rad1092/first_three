@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import suppress
 from uuid import UUID
 
@@ -9,14 +10,19 @@ from pydantic import BaseModel
 
 from shared.constants import ensure_dirs
 
+from .llm import BitNetModelService, CompilerMissingError
+from .model_store import DEFAULT_MODEL_ID
 from .security import get_or_create_token, require_token
 from .state import AllowedAppName, ServerState
+
+logger = logging.getLogger(__name__)
 
 PRUNE_INTERVAL_SECONDS = 1.0
 CLIENT_TTL_SECONDS = 15
 
-app = FastAPI(title="bitnetd", version="0.2.0-phase1-2")
+app = FastAPI(title="bitnetd", version="0.2.0-phase8.1")
 state = ServerState()
+model_service = BitNetModelService()
 _prune_task: asyncio.Task[None] | None = None
 
 
@@ -51,7 +57,21 @@ async def on_startup() -> None:
 
     ensure_dirs()
     get_or_create_token()
+    state.status = "starting"
+    state.reasons = ["model_not_loaded"]
     _prune_task = asyncio.create_task(_prune_loop())
+
+    try:
+        await asyncio.to_thread(model_service.load_if_needed, DEFAULT_MODEL_ID, "main")
+        state.status = "ready"
+        state.reasons = []
+    except Exception as exc:
+        logger.error("BitNet model load failed at startup: %s", exc)
+        state.status = "error"
+        reasons = ["model_load_failed"]
+        if isinstance(exc, CompilerMissingError) or "cl.exe" in str(exc).lower() or "cl is not found" in str(exc).lower():
+            reasons.append("compiler_missing")
+        state.reasons = reasons
 
 
 @app.on_event("shutdown")
@@ -67,6 +87,15 @@ async def on_shutdown() -> None:
 
 @app.get("/health")
 async def health() -> dict:
+    if model_service.is_loaded:
+        state.status = "ready"
+        state.reasons = []
+    elif state.status == "error":
+        if "model_load_failed" not in state.reasons:
+            state.reasons.append("model_load_failed")
+    else:
+        state.status = "starting"
+        state.reasons = ["model_not_loaded"]
     return (await state.health()).model_dump()
 
 
