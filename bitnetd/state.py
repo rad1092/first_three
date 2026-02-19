@@ -53,11 +53,15 @@ class ServerState:
         self.last_client_count = new_count
 
     def should_exit_on_transition_to_zero(self, prev_count: int, new_count: int) -> bool:
-        transitioned_to_zero = self.has_ever_had_client and prev_count > 0 and new_count == 0
-        if transitioned_to_zero:
+        should_exit = (
+            self.has_ever_had_client
+            and prev_count > 0
+            and new_count == 0
+            and self.active_generations == 0
+        )
+        if should_exit:
             self.exit_pending = True
-
-        return transitioned_to_zero and self.active_generations == 0
+        return should_exit
 
     async def register_client(self, client_id: str, app_name: AllowedAppName) -> int:
         async with self.lock:

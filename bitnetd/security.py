@@ -42,9 +42,7 @@ def verify_token(provided_token: str) -> bool:
     return hmac.compare_digest(provided_token, expected)
 
 
-async def require_token(
-    x_local_token: str | None = Header(default=None, alias=TOKEN_HEADER_NAME)
-) -> str:
+async def require_token(x_local_token: str | None = Header(default=None)) -> str:
     """FastAPI dependency for token-protected endpoints."""
     if not x_local_token or not verify_token(x_local_token):
         raise HTTPException(
