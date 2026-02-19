@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import threading
 from contextlib import suppress
 from datetime import datetime, timezone
 from time import monotonic
@@ -16,16 +15,9 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
-from shared.constants import ensure_dirs
+from shared.constants import bitnet_home, ensure_dirs
 
-from .llm import (
-    BitNetModelService,
-    CompilerMissingError,
-    build_streamer,
-    prepare_generation_kwargs,
-    seed_torch,
-)
-from .model_store import DEFAULT_MODEL_ID
+from .llm import BitNetModelService, CompilerMissingError
 from .security import get_or_create_token, require_token
 from .state import AllowedAppName, ServerState
 
@@ -34,21 +26,25 @@ logger = logging.getLogger(__name__)
 PRUNE_INTERVAL_SECONDS = 1.0
 CLIENT_TTL_SECONDS = 15
 
-DEFAULT_GENERATE_OPTIONS = {
-    "max_tokens": 256,
-    "temperature": 0.7,
-    "top_p": 0.95,
-    "seed": None,
-    "repeat_penalty": 1.1,
-    "stop": [],
-    "timeout_ms": 60_000,
-}
+logger = logging.getLogger(__name__)
 
-app = FastAPI(title="bitnetd", version="0.2.0-phase8.2")
+app = FastAPI(title="bitnetd", version="0.2.0-phase1-2")
 state = ServerState()
 model_service = BitNetModelService()
 _prune_task: asyncio.Task[None] | None = None
 
+
+
+
+def _resolve_snapshot_path() -> str:
+    manifest = bitnet_home() / "config" / "manifest.json"
+    if manifest.exists():
+        with suppress(Exception):
+            raw = json.loads(manifest.read_text(encoding="utf-8"))
+            snapshot_path = str(raw.get("snapshot_path", "")).strip()
+            if snapshot_path:
+                return snapshot_path
+    return str(bitnet_home() / "models")
 
 class RegisterClientRequest(BaseModel):
     client_id: UUID
@@ -98,18 +94,15 @@ async def on_startup() -> None:
     _prune_task = asyncio.create_task(_prune_loop())
 
     try:
-        await asyncio.to_thread(model_service.load_if_needed, DEFAULT_MODEL_ID, "main")
+        snapshot_path = _resolve_snapshot_path()
+        await asyncio.to_thread(model_service.load_if_needed, snapshot_path)
         state.status = "ready"
         state.reasons = []
     except Exception as exc:
         logger.error("BitNet model load failed at startup: %s", exc)
         state.status = "error"
         reasons = ["model_load_failed"]
-        if (
-            isinstance(exc, CompilerMissingError)
-            or "cl.exe" in str(exc).lower()
-            or "cl is not found" in str(exc).lower()
-        ):
+        if isinstance(exc, CompilerMissingError) or "cl.exe" in str(exc).lower() or "cl is not found" in str(exc).lower():
             reasons.append("compiler_missing")
         state.reasons = reasons
 
