@@ -5,11 +5,12 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from time import monotonic
 from uuid import uuid4
 
 import webview
 
-from .backend import check_bitnetd_health
+from .backend import check_bitnetd_health, get_bitnet_client
 from .cards import render_cards_to_html
 from .datasets import DatasetMeta, DatasetRegistry
 from .executor import ExecutionTrace, execute_actions
@@ -77,6 +78,11 @@ class AnalyzerApi:
         self.current_session_id: str | None = None
         self._session_states: dict[str, SessionDatasetState] = {}
         self._pending_by_session: dict[str, dict | None] = {}
+        self._bitnet_client = get_bitnet_client()
+        self._bitnet_client.register()
+        self._chat_inflight: bool = False
+        self._last_error_text: str = ""
+        self._last_error_at: float = 0.0
 
     def _append_assistant(self, text: str) -> None:
         assert self.current_session_id is not None
@@ -89,6 +95,14 @@ class AnalyzerApi:
                 "created_at": _utc_now_iso(),
             }
         )
+
+    def _append_assistant_dedup(self, text: str, *, window_seconds: float = 5.0) -> None:
+        now = monotonic()
+        if text == self._last_error_text and (now - self._last_error_at) <= window_seconds:
+            return
+        self._append_assistant(text)
+        self._last_error_text = text
+        self._last_error_at = now
 
     def _session_runtime_state(self) -> dict:
         assert self.current_session_id is not None
@@ -538,6 +552,41 @@ class AnalyzerApi:
             return False
         return self._has_analysis_keyword(text)
 
+    def _build_dataset_missing_prompt(self, user_text: str) -> str:
+        return (
+            "한국어로 짧고 친절하게 답해 주세요. 사용자는 분석을 원하지만 현재 활성 데이터셋이 없습니다. "
+            "왜 파일 첨부가 필요한지 1문장으로 설명하고, 다음 행동 1~3개를 번호로 제안해 주세요. "
+            f"사용자 입력: {user_text}"
+        )
+
+    def _build_general_chat_prompt(self, user_text: str) -> str:
+        return (
+            "한국어로 짧고 친절하게 대화해 주세요. 현재 데이터셋이 없어도 가능한 일반 설명/안내 중심으로 답해 주세요. "
+            "마지막에 다음 질문을 유도하는 한 문장을 덧붙여 주세요. "
+            f"사용자 입력: {user_text}"
+        )
+
+    def _respond_via_bitnet_chat(self, *, user_text: str, guidance_mode: bool) -> bool:
+        prompt = (
+            self._build_dataset_missing_prompt(user_text)
+            if guidance_mode
+            else self._build_general_chat_prompt(user_text)
+        )
+        ok, reply = self._bitnet_client.generate_text(
+            prompt=prompt,
+            max_tokens=96,
+            temperature=0.6 if guidance_mode else 0.7,
+            top_p=0.9,
+            timeout_ms=90000,
+        )
+        if ok:
+            self._append_assistant(reply)
+            self._last_error_text = ""
+            self._last_error_at = 0.0
+        else:
+            self._append_assistant_dedup(reply)
+        return ok
+
     def _route_and_respond(self, trimmed: str) -> dict:
         session_state = self._state()
         actions = route(trimmed, session_state)
@@ -567,6 +616,10 @@ class AnalyzerApi:
 
         self._ensure_session()
         assert self.current_session_id is not None
+
+        if self._chat_inflight:
+            self._append_assistant_dedup("이전 요청을 처리 중이에요. 잠시만 기다려 주세요.", window_seconds=3.0)
+            return self._state()
 
         before = load_sessions()
         before_messages = before["messages_by_session"].get(self.current_session_id, [])
@@ -709,6 +762,17 @@ class AnalyzerApi:
             return self._state()
 
         session_state = self._state()
+        if session_state.get("active_dataset") is None:
+            self._chat_inflight = True
+            try:
+                self._respond_via_bitnet_chat(
+                    user_text=trimmed,
+                    guidance_mode=self._has_analysis_keyword(trimmed),
+                )
+                return self._state()
+            finally:
+                self._chat_inflight = False
+
         actions = route(trimmed, session_state)
         first = actions[0]
         if first.get("needs_clarification"):
