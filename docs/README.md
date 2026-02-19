@@ -30,3 +30,9 @@ SSE의 `delta` 이벤트 payload는 반드시 `{"delta":"..."}` 단일 필드여
 `/docs`에서 **Authorize**를 누른 뒤 `%LOCALAPPDATA%\BitNet\config\token.txt` 값을 `X-Local-Token`으로 입력하면 됩니다.
 한 번 인증하면 `/generate`와 `/clients/*` 요청에 헤더가 자동 적용되어 테스트할 수 있습니다.
 `/health`는 기존처럼 토큰 없이 호출 가능합니다.
+
+## Phase 8.3 안내
+
+Analyzer는 Active 데이터셋이 없어도 bitnetd 연결이 살아 있으면 자연어 대화를 이어갈 수 있습니다.
+요약/그래프/검증 같은 분석 요청은 데이터셋이 없을 때 파일 첨부가 필요한 이유와 다음 행동을 한국어로 안내합니다.
+bitnetd 연결 또는 토큰 문제가 있으면 짧은 연결 안내 문구를 보여주고, 데이터셋이 있는 분석 흐름은 기존대로 유지됩니다.
