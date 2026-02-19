@@ -28,6 +28,8 @@ from .llm import (
 from .security import get_or_create_token, require_token
 from .state import AllowedAppName, ServerState
 
+logger = logging.getLogger(__name__)
+
 PRUNE_INTERVAL_SECONDS = 1.0
 CLIENT_TTL_SECONDS = 15
 

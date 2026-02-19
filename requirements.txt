@@ -7,7 +7,8 @@ requests>=2.31
 pandas>=2.2
 openpyxl>=3.1
 matplotlib>=3.8
-
-# Phase 1+ (placeholder only)
-# transformers
-# huggingface_hub
+transformers>=4.48.0
+huggingface_hub
+torch
+accelerate
+sse-starlette
