@@ -10,3 +10,4 @@ matplotlib>=3.8
 transformers>=4.48.0
 huggingface_hub
 torch
+accelerate
