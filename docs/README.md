@@ -15,3 +15,6 @@ BitNet 양자화 모델 로딩 시 환경에 따라 `accelerate`가 필요할 �
 `accelerate`가 없으면 startup 로드가 실패하고 `/health`는 `error/model_load_failed`로 남을 수 있습니다.
 의존성 설치 후 동일한 실행 흐름에서 로드가 완료되면 `/health`는 `ready`로 전환됩니다.
 
+Windows에서 "cl is not found" 오류가 보이면 Visual Studio Build Tools(C++ Build Tools, cl.exe)가 필요할 수 있습니다.
+bitnetd는 호환을 위해 torch compile/inductor 비활성 safe mode를 자동 적용합니다.
+safe mode에서는 추론 성능이 다소 느려질 수 있습니다.

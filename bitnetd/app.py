@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from shared.constants import ensure_dirs
 
-from .llm import BitNetModelService
+from .llm import BitNetModelService, CompilerMissingError
 from .model_store import DEFAULT_MODEL_ID
 from .security import get_or_create_token, require_token
 from .state import AllowedAppName, ServerState
@@ -68,7 +68,10 @@ async def on_startup() -> None:
     except Exception as exc:
         logger.error("BitNet model load failed at startup: %s", exc)
         state.status = "error"
-        state.reasons = ["model_load_failed"]
+        reasons = ["model_load_failed"]
+        if isinstance(exc, CompilerMissingError) or "cl.exe" in str(exc).lower() or "cl is not found" in str(exc).lower():
+            reasons.append("compiler_missing")
+        state.reasons = reasons
 
 
 @app.on_event("shutdown")
@@ -89,7 +92,7 @@ async def health() -> dict:
         state.reasons = []
     elif state.status == "error":
         if "model_load_failed" not in state.reasons:
-            state.reasons = ["model_load_failed"]
+            state.reasons.append("model_load_failed")
     else:
         state.status = "starting"
         state.reasons = ["model_not_loaded"]

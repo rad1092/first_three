@@ -2,16 +2,29 @@ from __future__ import annotations
 
 import inspect
 import logging
+import os
+import shutil
 import threading
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
+_WINDOWS_MISSING_CL = os.name == "nt" and shutil.which("cl") is None
+if _WINDOWS_MISSING_CL:
+    os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
+    os.environ.setdefault("TORCHINDUCTOR_DISABLE", "1")
+
 import torch
+import transformers
 from transformers import AutoTokenizer
 
 from .model_store import DEFAULT_MODEL_ID, DEFAULT_REVISION, resolve_model_snapshot
 
-logger = logging.getLogger(__name__)
+
+class CompilerMissingError(RuntimeError):
+    pass
 
 
 @dataclass(slots=True)
@@ -47,15 +60,13 @@ class BitNetModelService:
         return AutoTokenizer.from_pretrained(snapshot_path, **tokenizer_kwargs)
 
     def _resolve_bitnet_model_class(self) -> Any:
-        try:
-            from transformers import BitNetForCausalLM
-
-            return BitNetForCausalLM
-        except Exception as exc:
+        model_class = getattr(transformers, "BitNetForCausalLM", None)
+        if model_class is None:
             raise RuntimeError(
                 "BitNet model class is unavailable in installed transformers. "
                 "Upgrade transformers to a BitNet-supporting version (e.g. >=4.48.0)."
-            ) from exc
+            )
+        return model_class
 
     def load_if_needed(
         self,
@@ -69,6 +80,15 @@ class BitNetModelService:
             if self._loaded is not None:
                 return self._loaded
 
+            if _WINDOWS_MISSING_CL:
+                logger.warning(
+                    "Windows detected; cl.exe not found; disabling torch compile/inductor for compatibility."
+                )
+                with suppress(Exception):
+                    import torch._dynamo
+
+                    torch._dynamo.config.disable = True
+
             logger.info("Starting model load model_id=%s revision=%s", model_id, revision)
             snapshot_path = resolve_model_snapshot(model_id=model_id, revision=revision)
             tokenizer = self._load_tokenizer(str(snapshot_path))
@@ -80,6 +100,16 @@ class BitNetModelService:
                 model = model_class.from_pretrained(str(snapshot_path))
                 model = model.to(device)
             except Exception as exc:
+                if _WINDOWS_MISSING_CL and (
+                    "cl is not found" in str(exc).lower()
+                    or "cpp_builder" in str(exc).lower()
+                    or "inductor" in str(exc).lower()
+                ):
+                    raise CompilerMissingError(
+                        "Visual Studio Build Tools (C++ compiler cl.exe) is required OR torch compile "
+                        "must be disabled; currently cl.exe not found."
+                    ) from exc
+
                 if device != "cpu":
                     logger.warning("CUDA load failed, falling back to CPU: %s", exc)
                     device = "cpu"
@@ -106,3 +136,4 @@ class BitNetModelService:
                 snapshot_path,
             )
             return self._loaded
+
