@@ -83,6 +83,7 @@ class AnalyzerApi:
         self._chat_inflight: bool = False
         self._last_error_text: str = ""
         self._last_error_at: float = 0.0
+        self._last_user_text: str = ""
 
     def _append_assistant(self, text: str) -> None:
         assert self.current_session_id is not None
@@ -153,6 +154,11 @@ class AnalyzerApi:
                 card["meta"] = meta
 
         self._append_assistant(render_cards_to_html(cards))
+        self._append_llm_explainer_if_needed(
+            actions=actions,
+            cards=cards,
+            user_text=self._last_user_text,
+        )
 
     def _state_for(self, session_id: str) -> SessionDatasetState:
         return self._session_states.setdefault(session_id, SessionDatasetState(session_id=session_id))
@@ -555,9 +561,10 @@ class AnalyzerApi:
     def _build_dataset_missing_prompt(self, user_text: str) -> str:
         return (
             "반드시 한국어만 사용하세요. 영어 단어/문장 금지. "
+            "규칙문/지시문을 그대로 출력하지 마세요. "
             "코드, 마크다운, ``` , def , import , JSON 출력 금지. "
-            "AI:, System:, User: 같은 접두 금지. "
-            "총 2~4문장(최대 6문장)으로만 답하세요. "
+            "NAME:, AI:, System:, User: 같은 접두/메타문구 금지. "
+            "총 3~6문장으로만 답하세요. "
             "첫 문장은 파일 첨부가 필요한 이유를 1문장으로 설명하고, 이어서 1) 2) 3) 형식으로 다음 행동을 제시하세요. "
             f"사용자 입력: {user_text}"
         )
@@ -565,9 +572,10 @@ class AnalyzerApi:
     def _build_general_chat_prompt(self, user_text: str) -> str:
         return (
             "반드시 한국어만 사용하세요. 영어 단어/문장 금지. "
+            "규칙문/지시문을 그대로 출력하지 마세요. "
             "코드, 마크다운, ``` , def , import , JSON 출력 금지. "
-            "AI:, System:, User: 같은 접두 금지. "
-            "짧고 친절하게 2~4문장(최대 6문장)으로만 답하세요. "
+            "NAME:, AI:, System:, User: 같은 접두/메타문구 금지. "
+            "짧고 친절하게 3~6문장으로만 답하세요. "
             "불필요한 예시/목록/반복 없이, 마지막 문장은 다음 질문을 자연스럽게 유도하세요. "
             f"사용자 입력: {user_text}"
         )
@@ -594,6 +602,8 @@ class AnalyzerApi:
                 "System:",
                 "User:",
                 "AI:",
+                "NAME:",
+                "Desired Result",
             ],
         )
         if ok:
@@ -603,6 +613,70 @@ class AnalyzerApi:
         else:
             self._append_assistant_dedup(reply)
         return ok
+
+    def _cards_digest_for_explainer(self, cards: list[dict]) -> str:
+        lines: list[str] = []
+        for idx, card in enumerate(cards[:3], start=1):
+            title = str(card.get("title", f"결과 {idx}"))
+            lines.append(f"- 카드{idx}: {title}")
+            ctype = str(card.get("type", "text"))
+            if ctype == "text":
+                text = str(card.get("text", "")).replace("\n", " ").strip()
+                if text:
+                    lines.append(f"  요약: {text[:220]}")
+            meta = card.get("meta")
+            if isinstance(meta, dict) and meta:
+                kv = [f"{k}={v}" for k, v in list(meta.items())[:4] if v is not None]
+                if kv:
+                    lines.append("  메타: " + ", ".join(kv))
+        return "\n".join(lines[:10])
+
+    def _should_add_explainer(self, actions: list[dict], user_text: str) -> bool:
+        explain_intents = {"summary", "validate", "compare", "plot", "aggregate"}
+        action_intents = {str(a.get("intent", "")) for a in actions}
+        if action_intents & explain_intents:
+            return True
+        t = user_text.strip().lower()
+        return any(k in t for k in ["설명", "해석", "무슨 뜻", "의미"])
+
+    def _build_explainer_prompt(self, *, user_text: str, cards_digest: str) -> str:
+        return (
+            "반드시 한국어만 사용하세요. 영어/코드/마크다운/JSON/접두(NAME:, AI:, System:, User:) 금지. "
+            "규칙문을 그대로 출력하지 마세요. 3~6문장으로만 답하세요. "
+            "분석 결과의 핵심 수치/발견을 짧게 설명하고, 마지막에 다음 행동 1~2개를 제안하세요. "
+            f"사용자 질문: {user_text}\n"
+            f"분석 카드 요약:\n{cards_digest}"
+        )
+
+    def _append_llm_explainer_if_needed(self, *, actions: list[dict], cards: list[dict], user_text: str) -> None:
+        if not self._should_add_explainer(actions, user_text):
+            return
+        digest = self._cards_digest_for_explainer(cards)
+        if not digest:
+            return
+        prompt = self._build_explainer_prompt(user_text=user_text, cards_digest=digest)
+        ok, reply = self._bitnet_client.generate_text(
+            prompt=prompt,
+            max_tokens=96,
+            temperature=0.4,
+            top_p=0.85,
+            timeout_ms=90000,
+            stop=[
+                "```",
+                "```python",
+                "def ",
+                "import ",
+                "NAME:",
+                "System:",
+                "User:",
+                "AI:",
+                "Desired Result",
+            ],
+        )
+        if ok:
+            self._append_assistant(reply)
+        else:
+            self._append_assistant_dedup(reply)
 
     def _route_and_respond(self, trimmed: str) -> dict:
         session_state = self._state()
@@ -650,6 +724,7 @@ class AnalyzerApi:
                 "created_at": _utc_now_iso(),
             }
         )
+        self._last_user_text = trimmed
 
         if user_message_count == 0:
             append_event(

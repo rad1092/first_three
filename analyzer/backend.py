@@ -86,6 +86,8 @@ class BitnetClient:
             "System:",
             "User:",
             "AI:",
+            "NAME:",
+            "Desired Result",
         ]
         body = {
             "prompt": prompt,
