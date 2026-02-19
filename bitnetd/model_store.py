@@ -86,11 +86,11 @@ def resolve_model_snapshot(model_id: str = DEFAULT_MODEL_ID, revision: str = DEF
 
     local_dir = bitnet_home() / "models"
     logger.info("Starting model download model_id=%s revision=%s local_dir=%s", model_id, revision, local_dir)
+    logger.info("Using snapshot_download default resume behavior for partial files")
     try:
         snapshot_path_str = snapshot_download(
             repo_id=model_id,
             revision=revision,
-            resume_download=True,
             local_dir=local_dir,
         )
     except Exception as exc:
