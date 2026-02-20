@@ -199,11 +199,11 @@ class BitNetModelService:
             return loaded
 
 
-def seed_torch(seed: int | None) -> None:
+def seed_torch(seed: int | None, *, use_cuda: bool) -> None:
     if seed is None:
         return
     torch.manual_seed(seed)
-    if torch.cuda.is_available():
+    if use_cuda:
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
 

@@ -27,3 +27,7 @@
 - `analyzer` 세션/대화/파일첨부 UI 및 bitnetd 연결 로직 구현
 - shared 타입/프로토콜 스키마 확장
 - docs 상세 설치/복구 절차 보강
+
+
+## bitnetcpp 엔진 설정
+- bitnetcpp 서브프로세스 엔진 설정은 `docs/bitnetcpp.md`를 참고하세요.
