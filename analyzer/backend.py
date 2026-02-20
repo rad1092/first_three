@@ -67,6 +67,101 @@ class BitnetClient:
         self._heartbeat_stop.set()
         self._post_clients("/clients/unregister", {"client_id": self.client_id})
 
+    def _clip_text(self, value: object, limit: int = ERROR_TEXT_MAX_LENGTH) -> str:
+        text_value = str(value or "").strip()
+        if len(text_value) <= limit:
+            return text_value
+        return f"{text_value[:limit].rstrip()}…"
+
+    def _build_error_message(self, response: requests.Response) -> str:
+        if response.status_code == 401:
+            return "토큰 인증에 실패했어요. /docs Authorize 또는 token.txt 값을 확인해 주세요."
+
+        message = ""
+        try:
+            data = response.json()
+        except ValueError:
+            data = None
+
+        if isinstance(data, dict):
+            meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+            stop_reason = str(meta.get("stop_reason", "")).strip().lower()
+            if stop_reason == "timeout":
+                return "응답 시간이 초과됐어요. 잠시 기다리거나 max_tokens를 줄여 다시 시도해 주세요."
+
+            primary = self._clip_text(data.get("error") or data.get("message"))
+            detail = self._clip_text(data.get("detail"))
+
+            if primary:
+                message = primary
+                if detail and detail not in message:
+                    message = f"{message} ({detail})"
+            elif detail:
+                message = detail
+
+        if message:
+            return message
+        if response.status_code >= 500:
+            return "엔진 내부 오류가 발생했어요. 잠시 후 다시 시도해 주세요."
+        return "요청 처리에 실패했어요. 엔진 연결 상태와 입력값을 확인해 주세요."
+
+    def _post_generate(
+        self,
+        *,
+        prompt: str,
+        max_tokens: int,
+        temperature: float,
+        top_p: float,
+        timeout_ms: int,
+        stop: list[str] | None,
+    ) -> tuple[bool, str]:
+        body = {
+            "prompt": prompt,
+            "stream": False,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "top_p": top_p,
+            "timeout_ms": timeout_ms,
+            "stop": stop,
+        }
+
+        try:
+            headers = self._headers()
+        except FileNotFoundError:
+            return False, "토큰 파일을 찾을 수 없어요. %LOCALAPPDATA%\\BitNet\\config\\token.txt 를 확인해 주세요."
+        except OSError:
+            return False, "토큰 파일을 읽지 못했어요. 파일 권한과 내용을 확인해 주세요."
+
+        try:
+            response = requests.post(
+                f"{BITNETD_BASE_URL}/generate",
+                json=body,
+                headers=headers,
+                timeout=GENERATE_TIMEOUT_SECONDS,
+            )
+        except requests.Timeout:
+            return False, "응답이 느려요. 잠시 기다리거나 생성 길이(max_tokens)를 줄여서 다시 시도해 주세요."
+        except requests.RequestException:
+            return False, "엔진 연결이 필요해요. 우측 상단 연결 상태를 확인해 주세요."
+
+        if response.status_code != 200:
+            return False, self._build_error_message(response)
+
+        try:
+            data = response.json()
+        except ValueError:
+            return False, "엔진 응답을 해석하지 못했어요. 잠시 후 다시 시도해 주세요."
+
+        text = str(data.get("text", "")).strip() if isinstance(data, dict) else ""
+        if text:
+            return True, text
+
+        meta = data.get("meta") if isinstance(data, dict) else {}
+        stop_reason = str((meta or {}).get("stop_reason", "")).strip().lower()
+        if stop_reason == "timeout":
+            return False, "응답 시간이 초과됐어요. 잠시 기다리거나 max_tokens를 줄여 다시 시도해 주세요."
+        return False, "엔진이 빈 응답을 반환했어요. 잠시 후 다시 시도해 주세요."
+
     def generate_text(
         self,
         *,
@@ -90,85 +185,33 @@ class BitnetClient:
             "NAME:",
             "Desired Result",
         ]
-        body = {
-            "prompt": prompt,
-            "stream": False,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "top_p": top_p,
-            "timeout_ms": timeout_ms,
-            "stop": stop_list,
-        }
-        try:
-            headers = self._headers()
-        except FileNotFoundError:
-            return False, "토큰 파일을 찾을 수 없어요. %LOCALAPPDATA%\\BitNet\\config\\token.txt 를 확인해 주세요."
-        except OSError:
-            return False, "토큰 파일을 읽지 못했어요. 파일 권한과 내용을 확인해 주세요."
+        return self._post_generate(
+            prompt=prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            timeout_ms=timeout_ms,
+            stop=stop_list,
+        )
 
-        try:
-            response = requests.post(
-                f"{BITNETD_BASE_URL}/generate",
-                json=body,
-                headers=headers,
-                timeout=GENERATE_TIMEOUT_SECONDS,
-            )
-        except requests.Timeout:
-            return False, "응답이 느려요. 잠시 기다리거나 생성 길이(max_tokens)를 줄여서 다시 시도해 주세요."
-        except requests.RequestException:
-            return False, "엔진 연결이 필요해요. 우측 상단 연결 상태를 확인해 주세요."
-
-        def _clip_text(value: object, limit: int = ERROR_TEXT_MAX_LENGTH) -> str:
-            text_value = str(value or "").strip()
-            if len(text_value) <= limit:
-                return text_value
-            return f"{text_value[:limit].rstrip()}…"
-
-        if response.status_code == 401:
-            return False, "토큰 인증에 실패했어요. /docs Authorize 또는 token.txt 값을 확인해 주세요."
-        if response.status_code != 200:
-            message = ""
-            try:
-                data = response.json()
-            except ValueError:
-                data = None
-
-            if isinstance(data, dict):
-                meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
-                stop_reason = str(meta.get("stop_reason", "")).strip().lower()
-                if stop_reason == "timeout":
-                    return False, "응답 시간이 초과됐어요. 잠시 기다리거나 max_tokens를 줄여 다시 시도해 주세요."
-
-                primary = _clip_text(data.get("error") or data.get("message"))
-                detail = _clip_text(data.get("detail"))
-
-                if primary:
-                    message = primary
-                    if detail and detail not in message:
-                        message = f"{message} ({detail})"
-                elif detail:
-                    message = detail
-
-            if message:
-                return False, message
-            if response.status_code >= 500:
-                return False, "엔진 내부 오류가 발생했어요. 잠시 후 다시 시도해 주세요."
-            return False, "요청 처리에 실패했어요. 엔진 연결 상태와 입력값을 확인해 주세요."
-
-        try:
-            data = response.json()
-        except ValueError:
-            return False, "엔진 응답을 해석하지 못했어요. 잠시 후 다시 시도해 주세요."
-
-        text = str(data.get("text", "")).strip()
-        if text:
-            return True, text
-
-        meta = data.get("meta") if isinstance(data, dict) else {}
-        stop_reason = str((meta or {}).get("stop_reason", "")).strip().lower()
-        if stop_reason == "timeout":
-            return False, "응답 시간이 초과됐어요. 잠시 기다리거나 max_tokens를 줄여 다시 시도해 주세요."
-        return False, "엔진이 빈 응답을 반환했어요. 잠시 후 다시 시도해 주세요."
+    def generate_raw(
+        self,
+        *,
+        prompt: str,
+        max_tokens: int,
+        temperature: float,
+        top_p: float,
+        timeout_ms: int,
+        stop: list[str] | None = None,
+    ) -> tuple[bool, str]:
+        return self._post_generate(
+            prompt=prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            timeout_ms=timeout_ms,
+            stop=stop,
+        )
 
 
 _bitnet_client = BitnetClient()
