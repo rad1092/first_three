@@ -16,6 +16,7 @@ from .datasets import DatasetMeta, DatasetRegistry
 from .executor import ExecutionTrace, execute_actions
 from .history import append_event, ensure_history_file, load_sessions
 from .router import route
+from .router_llm import route_with_llm
 
 
 @dataclass
@@ -678,9 +679,16 @@ class AnalyzerApi:
         else:
             self._append_assistant_dedup(reply)
 
+    def _route_actions_with_fallback(self, trimmed: str, session_state: dict) -> list[dict]:
+        ok, actions, _ = route_with_llm(trimmed, session_state, self._bitnet_client)
+        if ok:
+            return actions
+        self._append_assistant_dedup("AI 라우팅이 불안정해서 기본 규칙으로 처리할게요.")
+        return route(trimmed, session_state)
+
     def _route_and_respond(self, trimmed: str) -> dict:
         session_state = self._state()
-        actions = route(trimmed, session_state)
+        actions = self._route_actions_with_fallback(trimmed, session_state)
         first = actions[0]
         if first.get("needs_clarification"):
             clarify = first.get("clarify") or {}
@@ -826,7 +834,7 @@ class AnalyzerApi:
 
             elif stage == "keyword":
                 session_state = self._state()
-                actions = route(trimmed, session_state)
+                actions = self._route_actions_with_fallback(trimmed, session_state)
                 a0 = actions[0]
                 if a0.get("needs_clarification"):
                     clarify = a0.get("clarify")
@@ -864,7 +872,7 @@ class AnalyzerApi:
             finally:
                 self._chat_inflight = False
 
-        actions = route(trimmed, session_state)
+        actions = self._route_actions_with_fallback(trimmed, session_state)
         first = actions[0]
         if first.get("needs_clarification"):
             clarify = first.get("clarify") or {}

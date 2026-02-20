@@ -23,6 +23,8 @@ class HealthResponse(BaseModel):
     uptime_ms: int
     token_enabled: bool = True
     base_url: str = BITNETD_BASE_URL
+    engine: str | None = None
+    model: str | None = None
 
 
 class ClientInfo(BaseModel):
@@ -38,6 +40,8 @@ class ServerState:
         self.status: HealthStatus = "not_ready"
         self.reasons: list[str] = ["weights_missing"]
         self.token_enabled: bool = True
+        self.engine: str | None = None
+        self.model: str | None = None
 
         self.clients: dict[str, ClientInfo] = {}
         self.active_generations: int = 0
@@ -125,6 +129,8 @@ class ServerState:
             uptime_ms=self.uptime_ms(),
             token_enabled=self.token_enabled,
             base_url=BITNETD_BASE_URL,
+            engine=self.engine,
+            model=self.model,
         )
 
     def exit_now(self) -> None:
