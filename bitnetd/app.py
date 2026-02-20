@@ -43,8 +43,6 @@ DEFAULT_GENERATE_OPTIONS = {
     "timeout_ms": 60_000,
 }
 
-logger = logging.getLogger(__name__)
-
 app = FastAPI(title="bitnetd", version="0.2.0-phase8.2")
 state = ServerState()
 model_service = BitNetModelService()
@@ -82,33 +80,6 @@ def _gpu_disabled_response(payload: "GenerateRequest") -> JSONResponse:
             "detail": _gpu_disabled_detail or _gpu_disabled_reason,
         },
     )
-
-
-def _gpu_disabled_sse_response() -> EventSourceResponse:
-    async def _gen():
-        yield {
-            "event": "error",
-            "data": json.dumps(
-                {
-                    "message": "GPU가 비활성화된 상태입니다. bitnetd 재시작이 필요합니다.",
-                    "detail": _gpu_disabled_detail or _gpu_disabled_reason,
-                },
-                ensure_ascii=False,
-            ),
-        }
-
-    return EventSourceResponse(_gen(), status_code=503)
-
-
-def _resolve_snapshot_path() -> str:
-    manifest = bitnet_home() / "config" / "manifest.json"
-    if manifest.exists():
-        with suppress(Exception):
-            raw = json.loads(manifest.read_text(encoding="utf-8"))
-            snapshot_path = str(raw.get("snapshot_path", "")).strip()
-            if snapshot_path:
-                return snapshot_path
-    return str(bitnet_home() / "models")
 
 
 def _resolve_snapshot_path() -> str:
@@ -258,6 +229,14 @@ def _is_cuda_runtime_error(exc: Exception) -> bool:
     return "device-side assert" in text or "cuda error" in text
 
 
+def _summarize_exc(exc: Exception, limit: int = 180) -> str:
+    lines = [line.strip() for line in str(exc).splitlines() if line.strip()]
+    summary = lines[0] if lines else str(exc).strip()
+    if len(summary) > limit:
+        return f"{summary[:limit].rstrip()}…"
+    return summary
+
+
 def _run_generate_once(
     *,
     loaded: Any,
@@ -368,7 +347,7 @@ async def generate(payload: GenerateRequest, _: str = Depends(require_token)):
         state.status = "ready"
         state.reasons = []
 
-        seed_torch(payload.seed)
+        seed_torch(payload.seed, use_cuda=(loaded.device == "cuda" and not _gpu_is_disabled()))
         started = monotonic()
         request_id = str(uuid4())
 
@@ -489,8 +468,8 @@ async def generate(payload: GenerateRequest, _: str = Depends(require_token)):
                     elapsed_ms = int((monotonic() - started) * 1000)
                     error_meta = _build_meta(req=payload, model=loaded.model_id, elapsed_ms=elapsed_ms, text=text, stop_reason="error")
                     if _is_cuda_runtime_error(exc):
-                        _disable_gpu("cuda_runtime_error", detail=str(exc))
-                        logger.error("CUDA device-side assert detected; attempting CPU fallback")
+                        _disable_gpu("cuda_runtime_error", detail=_summarize_exc(exc))
+                        logger.error("CUDA runtime error detected; GPU latched/disabled; restart required")
                         with suppress(Exception):
                             torch.cuda.synchronize()
                         yield {
@@ -538,8 +517,8 @@ async def generate(payload: GenerateRequest, _: str = Depends(require_token)):
             text, stop_reason = await asyncio.to_thread(_run_non_stream_with_loaded, loaded)
         except Exception as exc:
             if _is_cuda_runtime_error(exc):
-                _disable_gpu("cuda_runtime_error", detail=str(exc))
-                logger.error("CUDA device-side assert detected; attempting CPU fallback")
+                _disable_gpu("cuda_runtime_error", detail=_summarize_exc(exc))
+                logger.error("CUDA runtime error detected; GPU latched/disabled; restart required")
                 with suppress(Exception):
                     torch.cuda.synchronize()
                 return _gpu_disabled_response(payload)

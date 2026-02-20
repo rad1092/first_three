@@ -13,6 +13,7 @@ HEALTH_URL = f"{BITNETD_BASE_URL}/health"
 REQUEST_TIMEOUT_SECONDS = 1.0
 GENERATE_TIMEOUT_SECONDS = 100.0
 CLIENT_HEARTBEAT_SECONDS = 5.0
+ERROR_TEXT_MAX_LENGTH = 240
 
 
 def _token_file_path() -> Path:
@@ -117,11 +118,41 @@ class BitnetClient:
         except requests.RequestException:
             return False, "엔진 연결이 필요해요. 우측 상단 연결 상태를 확인해 주세요."
 
+        def _clip_text(value: object, limit: int = ERROR_TEXT_MAX_LENGTH) -> str:
+            text_value = str(value or "").strip()
+            if len(text_value) <= limit:
+                return text_value
+            return f"{text_value[:limit].rstrip()}…"
+
         if response.status_code == 401:
             return False, "토큰 인증에 실패했어요. /docs Authorize 또는 token.txt 값을 확인해 주세요."
-        if response.status_code >= 500:
-            return False, "엔진 내부 오류가 발생했어요. 잠시 후 다시 시도해 주세요."
         if response.status_code != 200:
+            message = ""
+            try:
+                data = response.json()
+            except ValueError:
+                data = None
+
+            if isinstance(data, dict):
+                meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+                stop_reason = str(meta.get("stop_reason", "")).strip().lower()
+                if stop_reason == "timeout":
+                    return False, "응답 시간이 초과됐어요. 잠시 기다리거나 max_tokens를 줄여 다시 시도해 주세요."
+
+                primary = _clip_text(data.get("error") or data.get("message"))
+                detail = _clip_text(data.get("detail"))
+
+                if primary:
+                    message = primary
+                    if detail and detail not in message:
+                        message = f"{message} ({detail})"
+                elif detail:
+                    message = detail
+
+            if message:
+                return False, message
+            if response.status_code >= 500:
+                return False, "엔진 내부 오류가 발생했어요. 잠시 후 다시 시도해 주세요."
             return False, "요청 처리에 실패했어요. 엔진 연결 상태와 입력값을 확인해 주세요."
 
         try:
