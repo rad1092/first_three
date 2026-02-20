@@ -85,6 +85,12 @@ def _tokens_out_for_text(text: str) -> int:
     return 0
 
 
+def _output_progress_units(text: str) -> int:
+    if isinstance(engine, TorchEngine):
+        return _tokens_out_for_text(text)
+    return len(text)
+
+
 def _build_meta(
     *,
     req: "GenerateRequest",
@@ -417,7 +423,7 @@ async def generate(payload: GenerateRequest, _: str = Depends(require_token)):
                     if timed_out:
                         stop_reason = "timeout"
                     elif stop_reason != "stop":
-                        produced = _tokens_out_for_text(text)
+                        produced = _output_progress_units(text)
                         stop_reason = "length" if produced >= payload.max_tokens else "stop"
 
                     elapsed_ms = int((monotonic() - started) * 1000)
