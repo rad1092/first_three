@@ -28,6 +28,8 @@ from .llm import (
 from .security import get_or_create_token, require_token
 from .state import AllowedAppName, ServerState
 
+logger = logging.getLogger(__name__)
+
 PRUNE_INTERVAL_SECONDS = 1.0
 CLIENT_TTL_SECONDS = 15
 
@@ -96,6 +98,17 @@ def _gpu_disabled_sse_response() -> EventSourceResponse:
         }
 
     return EventSourceResponse(_gen(), status_code=503)
+
+
+def _resolve_snapshot_path() -> str:
+    manifest = bitnet_home() / "config" / "manifest.json"
+    if manifest.exists():
+        with suppress(Exception):
+            raw = json.loads(manifest.read_text(encoding="utf-8"))
+            snapshot_path = str(raw.get("snapshot_path", "")).strip()
+            if snapshot_path:
+                return snapshot_path
+    return str(bitnet_home() / "models")
 
 
 def _resolve_snapshot_path() -> str:
