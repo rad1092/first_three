@@ -49,6 +49,66 @@ app = FastAPI(title="bitnetd", version="0.2.0-phase8.2")
 state = ServerState()
 model_service = BitNetModelService()
 _prune_task: asyncio.Task[None] | None = None
+_gpu_disabled_reason: str | None = None
+_gpu_disabled_detail: str | None = None
+
+
+
+def _gpu_is_disabled() -> bool:
+    return _gpu_disabled_reason is not None
+
+
+def _disable_gpu(reason: str, detail: str | None = None) -> None:
+    global _gpu_disabled_reason, _gpu_disabled_detail
+    _gpu_disabled_reason = reason
+    _gpu_disabled_detail = detail
+
+
+def _gpu_disabled_response(payload: "GenerateRequest") -> JSONResponse:
+    model_name = model_service.loaded.model_id if model_service.is_loaded else "unknown"
+    meta = _build_meta(
+        req=payload,
+        model=model_name,
+        elapsed_ms=0,
+        text="",
+        stop_reason="error",
+    )
+    return JSONResponse(
+        status_code=503,
+        content={
+            "text": "",
+            "meta": meta,
+            "error": "GPU가 비활성화된 상태입니다. bitnetd 재시작이 필요합니다.",
+            "detail": _gpu_disabled_detail or _gpu_disabled_reason,
+        },
+    )
+
+
+def _gpu_disabled_sse_response() -> EventSourceResponse:
+    async def _gen():
+        yield {
+            "event": "error",
+            "data": json.dumps(
+                {
+                    "message": "GPU가 비활성화된 상태입니다. bitnetd 재시작이 필요합니다.",
+                    "detail": _gpu_disabled_detail or _gpu_disabled_reason,
+                },
+                ensure_ascii=False,
+            ),
+        }
+
+    return EventSourceResponse(_gen(), status_code=503)
+
+
+def _resolve_snapshot_path() -> str:
+    manifest = bitnet_home() / "config" / "manifest.json"
+    if manifest.exists():
+        with suppress(Exception):
+            raw = json.loads(manifest.read_text(encoding="utf-8"))
+            snapshot_path = str(raw.get("snapshot_path", "")).strip()
+            if snapshot_path:
+                return snapshot_path
+    return str(bitnet_home() / "models")
 
 
 def _resolve_snapshot_path() -> str:
@@ -226,6 +286,13 @@ async def health() -> dict:
     else:
         state.status = "starting"
         state.reasons = ["model_not_loaded"]
+
+    if _gpu_is_disabled():
+        if "gpu_disabled" not in state.reasons:
+            state.reasons.append("gpu_disabled")
+        if _gpu_disabled_reason and _gpu_disabled_reason not in state.reasons:
+            state.reasons.append(_gpu_disabled_reason)
+
     return (await state.health()).model_dump()
 
 
@@ -270,6 +337,28 @@ async def unregister_client(
 async def generate(payload: GenerateRequest, _: str = Depends(require_token)):
     await _mark_generation_start()
     stream_manages_finally = False
+
+    if _gpu_is_disabled():
+        if payload.stream:
+            stream_manages_finally = True
+
+            async def _guard_stream():
+                try:
+                    yield {
+                        "event": "error",
+                        "data": json.dumps(
+                            {
+                                "message": "GPU가 비활성화된 상태입니다. bitnetd 재시작이 필요합니다.",
+                                "detail": _gpu_disabled_detail or _gpu_disabled_reason,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
+                finally:
+                    await _mark_generation_end()
+
+            return EventSourceResponse(_guard_stream(), status_code=503)
+        return _gpu_disabled_response(payload)
 
     try:
         if not model_service.is_loaded:
@@ -399,12 +488,27 @@ async def generate(payload: GenerateRequest, _: str = Depends(require_token)):
                 except Exception as exc:
                     elapsed_ms = int((monotonic() - started) * 1000)
                     error_meta = _build_meta(req=payload, model=loaded.model_id, elapsed_ms=elapsed_ms, text=text, stop_reason="error")
-                    message = str(exc)
                     if _is_cuda_runtime_error(exc):
+                        _disable_gpu("cuda_runtime_error", detail=str(exc))
+                        logger.error("CUDA device-side assert detected; attempting CPU fallback")
                         with suppress(Exception):
                             torch.cuda.synchronize()
-                        message = "GPU 추론 에러가 발생했습니다. CUDA 컨텍스트가 오염될 수 있어 bitnetd 재시작이 필요할 수 있습니다."
-                    yield {"event": "error", "data": json.dumps({"message": message, "meta": error_meta}, ensure_ascii=False)}
+                        yield {
+                            "event": "error",
+                            "data": json.dumps(
+                                {
+                                    "message": "GPU 추론 오류로 GPU가 비활성화되었습니다. bitnetd 재시작이 필요합니다.",
+                                    "detail": _gpu_disabled_detail or _gpu_disabled_reason,
+                                    "meta": error_meta,
+                                },
+                                ensure_ascii=False,
+                            ),
+                        }
+                    else:
+                        yield {
+                            "event": "error",
+                            "data": json.dumps({"message": str(exc), "meta": error_meta}, ensure_ascii=False),
+                        }
                 finally:
                     await _mark_generation_end()
 
@@ -434,27 +538,12 @@ async def generate(payload: GenerateRequest, _: str = Depends(require_token)):
             text, stop_reason = await asyncio.to_thread(_run_non_stream_with_loaded, loaded)
         except Exception as exc:
             if _is_cuda_runtime_error(exc):
+                _disable_gpu("cuda_runtime_error", detail=str(exc))
                 logger.error("CUDA device-side assert detected; attempting CPU fallback")
                 with suppress(Exception):
                     torch.cuda.synchronize()
-                try:
-                    cpu_loaded = await asyncio.to_thread(model_service.load_cpu_fallback, loaded.snapshot_path, loaded.model_id, loaded.revision)
-                    text, stop_reason = await asyncio.to_thread(_run_non_stream_with_loaded, cpu_loaded)
-                except Exception as cpu_exc:
-                    state.status = "error"
-                    state.reasons = ["model_load_failed"]
-                    error_meta = _build_meta(req=payload, model=loaded.model_id, elapsed_ms=0, text="", stop_reason="error")
-                    return JSONResponse(
-                        status_code=500,
-                        content={
-                            "text": "",
-                            "meta": error_meta,
-                            "error": "GPU 추론 에러가 발생했습니다. CUDA 컨텍스트가 오염될 수 있어 bitnetd 재시작이 필요합니다.",
-                            "detail": str(cpu_exc),
-                        },
-                    )
-            else:
-                raise
+                return _gpu_disabled_response(payload)
+            raise
 
         elapsed_ms = int((monotonic() - started) * 1000)
         meta = _build_meta(req=payload, model=loaded.model_id, elapsed_ms=elapsed_ms, text=text, stop_reason=stop_reason)
