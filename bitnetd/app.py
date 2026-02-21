@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 
 import torch
 from fastapi import BackgroundTasks, Depends, FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
@@ -153,6 +154,18 @@ def _engine_error_response(payload: "GenerateRequest", exc: EngineError) -> JSON
     return JSONResponse(status_code=exc.status_code, content=content)
 
 
+def _validation_error_summary(exc: RequestValidationError) -> str:
+    parts: list[str] = []
+    for err in exc.errors():
+        loc = " -> ".join(str(v) for v in err.get("loc", []))
+        msg = str(err.get("msg", "validation_error"))
+        if loc:
+            parts.append(f"{loc}: {msg}")
+        else:
+            parts.append(msg)
+    return " | ".join(parts) if parts else "request_validation_error"
+
+
 class RegisterClientRequest(BaseModel):
     client_id: UUID
     app_name: AllowedAppName
@@ -178,6 +191,28 @@ class GenerateRequest(BaseModel):
     repeat_penalty: float = Field(default=DEFAULT_GENERATE_OPTIONS["repeat_penalty"], gt=0)
     stop: list[str] = Field(default_factory=list)
     timeout_ms: int | None = Field(default=DEFAULT_GENERATE_OPTIONS["timeout_ms"], ge=1)
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_exception_handler(_, exc: RequestValidationError) -> JSONResponse:
+    fallback_req = GenerateRequest(prompt="", stream=False)
+    meta = _build_meta(
+        req=fallback_req,
+        model=_engine_model_label(),
+        elapsed_ms=0,
+        text="",
+        stop_reason="error",
+        tokens_out=0,
+    )
+    return JSONResponse(
+        status_code=422,
+        content={
+            "text": "",
+            "meta": meta,
+            "error": "요청 형식이 올바르지 않습니다.",
+            "detail": _validation_error_summary(exc),
+        },
+    )
 
 
 async def _prune_loop() -> None:
