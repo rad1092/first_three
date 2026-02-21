@@ -32,6 +32,7 @@
         background: rgba(17,24,39,.9);
       }
       .left-actions { display: flex; gap: 8px; align-items: center; }
+      .right-actions { display: flex; gap: 8px; align-items: center; }
       .status {
         padding: 6px 12px;
         border-radius: 999px;
@@ -160,6 +161,21 @@
       .img-modal.open { display: flex; }
       .img-modal img { max-width: 92vw; max-height: 90vh; border-radius: 10px; border: 1px solid #475569; background: #0b1220; }
       .failure-actions { display: none; gap: 10px; margin-top: 10px; }
+      .diagnostics-panel {
+        margin: 10px 0 14px;
+        background: #0b1220;
+        border: 1px solid #334155;
+        border-radius: 12px;
+        padding: 12px;
+      }
+      .diag-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(220px,1fr)); gap: 8px; margin-bottom: 10px; }
+      .diag-card { border: 1px solid #334155; border-radius: 10px; padding: 10px; background: #111827; }
+      .diag-card.pass { border-color: rgba(34,197,94,.45); }
+      .diag-card.fail { border-color: rgba(239,68,68,.45); }
+      .diag-title { font-weight: 700; margin-bottom: 6px; }
+      .diag-meta { color: #9ca3af; font-size: 12px; }
+      details.diag-detail { margin-top: 8px; }
+      .diag-detail pre { white-space: pre-wrap; max-height: 180px; overflow: auto; background: #020617; border: 1px solid #334155; padding: 8px; border-radius: 8px; }
       .composer {
         border-top: 1px solid var(--line);
         padding: 12px 16px;
@@ -199,7 +215,10 @@
           <button id="btn-toggle">세션 목록 토글</button>
           <button id="btn-delete">세션 삭제</button>
         </div>
-        <div id="status-badge" class="status fail">연결 실패</div>
+        <div class="right-actions">
+          <button id="btn-diagnostics">진단</button>
+          <div id="status-badge" class="status fail">연결 실패</div>
+        </div>
       </header>
 
       <div class="main" id="main-layout">
@@ -213,6 +232,17 @@
               <button id="btn-install">Install/Build Engine</button>
               <button id="btn-download">Download Model</button>
             </div>
+          </div>
+          <div class="diagnostics-panel" id="diagnostics-panel" style="display:none;">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px;">
+              <strong>Diagnostics (진단)</strong>
+              <div>
+                <button id="btn-diag-refresh">health 새로고침</button>
+                <button id="btn-diag-run">스모크 테스트 실행</button>
+              </div>
+            </div>
+            <div id="diag-health" class="diag-meta">health 정보 없음</div>
+            <div id="diag-results" class="diag-grid"></div>
           </div>
           <div class="messages" id="messages"></div>
         </section>
@@ -245,6 +275,7 @@
       let pollTimerId = null;
       let pollInFlight = false;
       let currentPollMs = 3000;
+      let diagnosticsOpen = false;
 
       function $(id) { return document.getElementById(id); }
       function toast(msg) { alert(msg || 'not implemented yet'); }
@@ -376,6 +407,72 @@
           }
           root.appendChild(bubble);
         });
+      }
+
+      function renderDiagnosticsHealth(health) {
+        const root = $('diag-health');
+        if (!health) {
+          root.textContent = 'health 정보 없음';
+          return;
+        }
+        const reasons = Array.isArray(health.reasons) ? health.reasons.join(', ') : '';
+        root.textContent = `status=${health.status} | engine=${health.engine} | model=${health.model} | reasons=${reasons || '-'}`;
+      }
+
+      async function copyDetailText(text) {
+        await copyText(text || '');
+      }
+
+      function renderDiagnosticsResults(results) {
+        const root = $('diag-results');
+        root.innerHTML = '';
+        (results || []).forEach((r) => {
+          const card = document.createElement('div');
+          card.className = `diag-card ${r.ok ? 'pass' : 'fail'}`;
+          const status = r.ok ? '✅ PASS' : '❌ FAIL';
+          const elapsed = Number(r.elapsed_ms || 0);
+          card.innerHTML = `
+            <div class="diag-title">${status} · ${escapeHtml(r.name || '')}</div>
+            <div class="diag-meta">elapsed_ms=${elapsed}</div>
+            ${r.ok ? `<div class="diag-meta">응답: ${escapeHtml((r.text || '').slice(0, 180))}</div>` : ''}
+          `;
+          if (!r.ok) {
+            const detail = String(r.detail || '');
+            const error = String(r.error || '');
+            const details = document.createElement('details');
+            details.className = 'diag-detail';
+            details.innerHTML = `<summary>오류 자세히 보기</summary>
+              <div class="diag-meta">${escapeHtml(error)}</div>
+              <pre>${escapeHtml(detail || '(detail 없음)')}</pre>`;
+            const copyBtn = document.createElement('button');
+            copyBtn.textContent = 'Copy detail';
+            copyBtn.onclick = async () => { await copyDetailText(detail || error); };
+            details.appendChild(copyBtn);
+            card.appendChild(details);
+          }
+          root.appendChild(card);
+        });
+      }
+
+      async function refreshDiagnosticsHealth() {
+        const data = await callApi('get_diagnostics_snapshot');
+        if (!data) return;
+        renderDiagnosticsHealth(data.health || null);
+      }
+
+      async function runDiagnostics() {
+        const data = await callApi('run_diagnostics');
+        if (!data) return;
+        renderDiagnosticsHealth(data.health || null);
+        renderDiagnosticsResults(data.results || []);
+      }
+
+      async function toggleDiagnostics() {
+        diagnosticsOpen = !diagnosticsOpen;
+        $('diagnostics-panel').style.display = diagnosticsOpen ? 'block' : 'none';
+        if (diagnosticsOpen) {
+          await refreshDiagnosticsHealth();
+        }
       }
 
       function renderDatasets() {
@@ -533,6 +630,9 @@
       };
       $('btn-attach').onclick = async () => { const data = await callApi('attach_files'); if (data) applyState(data); };
       $('btn-send').onclick = async () => { await sendInputMessage(); };
+      $('btn-diagnostics').onclick = async () => { await toggleDiagnostics(); };
+      $('btn-diag-refresh').onclick = async () => { await refreshDiagnosticsHealth(); };
+      $('btn-diag-run').onclick = async () => { await runDiagnostics(); };
 
       $('btn-install').onclick = async () => { const r = await callApi('install_build_engine'); if (r) toast(r); };
       $('btn-download').onclick = async () => { const r = await callApi('download_model'); if (r) toast(r); };
