@@ -38,11 +38,15 @@
 <python_exe> <script_path> -m <model_path> -p <prompt> -n <max_tokens> --temp <temperature> -c <ctx_size> -t <threads>
 ```
 
+실행 작업 디렉터리(`cwd`)는 `<script_path>`의 부모 폴더로 고정됩니다.
+
 ### exe 모드
 
 ```bash
 <exe_path> -m <model_path> -p <prompt> -n <max_tokens> --temp <temperature> -c <ctx_size> -t <threads>
 ```
+
+실행 작업 디렉터리(`cwd`)는 `<exe_path>`의 부모 폴더로 고정됩니다.
 
 추가 옵션은 `extra_args`로 뒤에 붙습니다.
 
@@ -52,6 +56,15 @@
 - `stream=true`: 내부적으로 전체 결과를 만든 뒤 고정 길이로 나눠 `delta` 이벤트를 전송하는 pseudo-stream 방식입니다.
 - `top_p`, `repeat_penalty`는 bitnet.cpp CLI가 지원하지 않을 수 있으며, 미지원 시 무시될 수 있습니다.
 - `stop`은 CLI 미지원일 경우 bitnetd에서 후처리로 잘라 `stop_reason=stop`을 반영합니다.
+
+## 오류 상세(detail) 개선
+
+- bitnetcpp 서브프로세스가 실패하면 detail에 `exit_code`(10진/16진)와 실행 커맨드 미리보기(command preview)가 포함됩니다.
+- `stderr/stdout`는 앞부분이 아닌 **마지막 60줄 tail** 중심으로 포함되며, 너무 길면 뒤쪽 일부(최대 약 3200자)만 남겨 실제 오류 원인 파악을 돕습니다.
+- Windows에서 `0xC0000409`/`0xC0000005` 같은 크래시 코드가 보이면 런타임/스택버퍼/접근위반 가능성 힌트가 함께 출력됩니다.
+- 위 크래시 코드가 감지되면 bitnetd는 자동으로 **안전모드 1회 재시도**를 수행합니다.
+  - 재시도 설정: `threads=1`, `ctx_size<=2048`, `extra_args=[]`
+  - 재시도까지 실패하면 detail에 `1차 시도/2차 시도` 각각의 exit code/command/tail이 함께 포함됩니다.
 
 ## 준비 상태(health reasons)
 
