@@ -10,7 +10,7 @@ from uuid import uuid4
 
 import webview
 
-from .backend import check_bitnetd_health, get_bitnet_client
+from .backend import check_bitnetd_health, fetch_bitnetd_health, get_bitnet_client
 from .cards import render_cards_to_html
 from .datasets import DatasetMeta, DatasetRegistry
 from .executor import ExecutionTrace, execute_actions
@@ -369,6 +369,49 @@ class AnalyzerApi:
             "connection_text": status_text,
         }
 
+    def get_diagnostics_snapshot(self) -> dict:
+        health = fetch_bitnetd_health()
+        return {
+            "connection_ok": bool(health.get("ok")),
+            "connection_text": "연결 성공" if health.get("ok") else "연결 실패",
+            "health": health,
+        }
+
+    def run_diagnostics(self) -> dict:
+        tests = [
+            {
+                "name": "짧은 질문",
+                "prompt": "안녕하세요",
+                "max_tokens": 48,
+                "temperature": 0.3,
+                "top_p": 0.9,
+                "timeout_ms": 60000,
+            },
+            {
+                "name": "표/차트 요청",
+                "prompt": "데이터를 첨부한 뒤 시도별 인구 평균을 표로 보여주고, 막대 차트 제안도 해주세요.",
+                "max_tokens": 96,
+                "temperature": 0.35,
+                "top_p": 0.9,
+                "timeout_ms": 90000,
+            },
+            {
+                "name": "긴 문장 요약",
+                "prompt": "다음 문장을 두 문장으로 요약해 주세요: 인공지능 도입은 생산성 향상과 의사결정 지원에 기여하지만, 데이터 품질과 윤리 기준이 확보되지 않으면 오히려 잘못된 자동화로 이어질 수 있어 단계적 검증이 필요합니다.",
+                "max_tokens": 96,
+                "temperature": 0.3,
+                "top_p": 0.9,
+                "timeout_ms": 90000,
+            },
+        ]
+        results: list[dict[str, object]] = []
+        for spec in tests:
+            started = monotonic()
+            result = self._bitnet_client.run_smoke_test(**spec)
+            result["elapsed_ms"] = int((monotonic() - started) * 1000)
+            results.append(result)
+        return {"health": fetch_bitnetd_health(), "results": results}
+
     def switch_session(self, session_id: str) -> dict:
         self.current_session_id = session_id
         return self._state()
@@ -612,7 +655,16 @@ class AnalyzerApi:
             self._last_error_text = ""
             self._last_error_at = 0.0
         else:
-            self._append_assistant_dedup(reply)
+            detail = self._bitnet_client.pop_last_error() or {}
+            detail_text = str(detail.get("detail") or "").strip()
+            summary = str(detail.get("summary") or reply).strip()
+            status_code = detail.get("status_code")
+            lines = [f"{summary}"]
+            if status_code:
+                lines.append(f"status_code={status_code}")
+            if detail_text:
+                lines.append("원문 detail은 진단(버튼)에서 복사할 수 있어요.")
+            self._append_assistant_dedup("\n".join(lines))
         return ok
 
     def _cards_digest_for_explainer(self, cards: list[dict]) -> str:
@@ -677,7 +729,11 @@ class AnalyzerApi:
         if ok:
             self._append_assistant(reply)
         else:
-            self._append_assistant_dedup(reply)
+            detail = self._bitnet_client.pop_last_error() or {}
+            summary = str(detail.get("summary") or reply).strip()
+            status_code = detail.get("status_code")
+            extra = f" (status_code={status_code})" if status_code else ""
+            self._append_assistant_dedup(f"{summary}{extra}")
 
     def _route_actions_with_fallback(self, trimmed: str, session_state: dict) -> list[dict]:
         ok, actions, _ = route_with_llm(trimmed, session_state, self._bitnet_client)
