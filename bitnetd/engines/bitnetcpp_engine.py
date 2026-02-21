@@ -52,7 +52,7 @@ class BitnetCppEngine:
             prompt,
             "-n",
             str(params.max_tokens),
-            "-temp",
+            "--temp",
             str(params.temperature),
             "-c",
             str(cfg.ctx_size),
