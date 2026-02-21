@@ -35,13 +35,13 @@
 ### script 모드
 
 ```bash
-<python_exe> <script_path> -m <model_path> -p <prompt> -n <max_tokens> -temp <temperature> -c <ctx_size> -t <threads>
+<python_exe> <script_path> -m <model_path> -p <prompt> -n <max_tokens> --temp <temperature> -c <ctx_size> -t <threads>
 ```
 
 ### exe 모드
 
 ```bash
-<exe_path> -m <model_path> -p <prompt> -n <max_tokens> -temp <temperature> -c <ctx_size> -t <threads>
+<exe_path> -m <model_path> -p <prompt> -n <max_tokens> --temp <temperature> -c <ctx_size> -t <threads>
 ```
 
 추가 옵션은 `extra_args`로 뒤에 붙습니다.
