@@ -3,9 +3,11 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
+from uuid import uuid4
 
 from ..config import BitnetCppConfig
 from .base import EngineError, GenerateParams
@@ -16,6 +18,9 @@ class _ProcessAttempt:
     name: str
     cmd: list[str]
     cwd: str | None
+    prompt_mode: str
+    prompt_file_flag: str | None
+    prompt_file_created: bool
     completed: subprocess.CompletedProcess[str] | None = None
     os_error: str | None = None
 
@@ -26,6 +31,8 @@ class BitnetCppEngine:
 
     def __init__(self, config: BitnetCppConfig) -> None:
         self._config = config
+        self._prompt_file_flag: str | None = None
+        self._prompt_file_checked: bool = False
 
     def model_label(self) -> str:
         model_path = Path(self._config.model_path) if self._config.model_path else None
@@ -107,6 +114,45 @@ class BitnetCppEngine:
         )
         return normalized.startswith(noisy_prefixes)
 
+    def _help_command(self) -> list[str]:
+        cfg = self._config
+        if cfg.mode == "script":
+            return [cfg.python_exe, cfg.script_path, "--help"]
+        if cfg.mode == "exe":
+            return [cfg.exe_path, "--help"]
+        return []
+
+    def _detect_prompt_file_flag(self) -> str | None:
+        if self._prompt_file_checked:
+            return self._prompt_file_flag
+
+        detected: str | None = None
+        help_cmd = self._help_command()
+        if help_cmd:
+            try:
+                completed = subprocess.run(
+                    help_cmd,
+                    cwd=self._resolve_cwd(),
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                    check=False,
+                    encoding="utf-8",
+                    errors="replace",
+                    env=os.environ.copy(),
+                )
+                help_text = f"{completed.stdout}\n{completed.stderr}".lower()
+                if "-f," in help_text or " -f " in help_text or "\n-f" in help_text:
+                    detected = "-f"
+                elif "--file" in help_text:
+                    detected = "--file"
+            except Exception:  # noqa: BLE001
+                detected = None
+
+        self._prompt_file_flag = detected
+        self._prompt_file_checked = True
+        return self._prompt_file_flag
+
     def _build_failure_detail(
         self,
         *,
@@ -115,10 +161,20 @@ class BitnetCppEngine:
         stdout: str,
         stderr: str,
         reason: str,
+        prompt_mode: str,
+        prompt_file_flag: str | None,
+        prompt_file_created: bool,
     ) -> str:
         exit_summary, crash_hint = self._format_exit_code(exit_code)
         preview = " ".join(shlex.quote(v) for v in cmd)
-        parts = [reason, exit_summary, f"command={preview}"]
+        parts = [
+            reason,
+            exit_summary,
+            f"command={preview}",
+            f"prompt_mode={prompt_mode}",
+            f"prompt_file_flag={prompt_file_flag or 'none'}",
+            f"prompt_file_created={'true' if prompt_file_created else 'false'}",
+        ]
         if crash_hint:
             parts.append(crash_hint)
         stdout_tail = self._tail_lines(stdout)
@@ -131,9 +187,9 @@ class BitnetCppEngine:
 
     def _build_command(
         self,
-        prompt: str,
-        params: GenerateParams,
         *,
+        prompt_arg: list[str],
+        params: GenerateParams,
         threads_override: int | None = None,
         ctx_size_override: int | None = None,
         extra_args_override: list[str] | None = None,
@@ -145,8 +201,7 @@ class BitnetCppEngine:
         common_args = [
             "-m",
             cfg.model_path,
-            "-p",
-            prompt,
+            *prompt_arg,
             "-n",
             str(params.max_tokens),
             "--temp",
@@ -195,7 +250,17 @@ class BitnetCppEngine:
     def _attempt_detail(self, attempt: _ProcessAttempt) -> str:
         if attempt.os_error:
             preview = " ".join(shlex.quote(v) for v in attempt.cmd)
-            return f"attempt={attempt.name}\n\nos_error={attempt.os_error}\n\ncommand={preview}"
+            return "\n\n".join(
+                [
+                    f"attempt={attempt.name}",
+                    f"os_error={attempt.os_error}",
+                    f"command={preview}",
+                    f"prompt_mode={attempt.prompt_mode}",
+                    f"prompt_file_flag={attempt.prompt_file_flag or 'none'}",
+                    f"prompt_file_created={'true' if attempt.prompt_file_created else 'false'}",
+                ]
+            )
+
         completed = attempt.completed
         assert completed is not None
         return self._build_failure_detail(
@@ -204,6 +269,9 @@ class BitnetCppEngine:
             stdout=completed.stdout,
             stderr=completed.stderr,
             reason=f"attempt={attempt.name}",
+            prompt_mode=attempt.prompt_mode,
+            prompt_file_flag=attempt.prompt_file_flag,
+            prompt_file_created=attempt.prompt_file_created,
         )
 
     def _clean_output(self, stdout: str, stderr: str) -> str:
@@ -276,80 +344,111 @@ class BitnetCppEngine:
             )
 
         cwd = self._resolve_cwd()
-        first_attempt = self._run_attempt(
-            _ProcessAttempt(name="1차 시도", cmd=self._build_command(prompt, params), cwd=cwd),
-            params.timeout_ms,
-        )
-        if first_attempt.os_error:
-            raise EngineError(
-                error="bitnetcpp 서브프로세스를 시작하지 못했습니다.",
-                detail=self._attempt_detail(first_attempt),
-                status_code=503,
-            )
+        prompt_file_needed = (not prompt.isascii()) or len(prompt) >= 800
+        detected_flag = self._detect_prompt_file_flag()
+        prompt_file_flag = detected_flag if detected_flag else "-f"
+        prompt_mode = "inline"
+        prompt_file_created = False
+        tmp_path: Path | None = None
+        prompt_arg: list[str] = ["-p", prompt]
 
-        completed = first_attempt.completed
-        assert completed is not None
+        try:
+            if prompt_file_needed:
+                prompt_mode = "file"
+                base_dir = Path(cwd) if cwd else Path.cwd()
+                tmp_path = base_dir / f"prompt_tmp_{uuid4().hex}.txt"
+                tmp_path.write_text(prompt, encoding="utf-8", newline="\n")
+                prompt_file_created = True
+                prompt_arg = [prompt_file_flag, str(tmp_path)]
 
-        if completed.returncode != 0 and self._is_crash_code(completed.returncode):
-            second_attempt = self._run_attempt(
+            first_attempt = self._run_attempt(
                 _ProcessAttempt(
-                    name="2차 시도(안전모드)",
-                    cmd=self._build_command(
-                        prompt,
-                        params,
-                        threads_override=1,
-                        ctx_size_override=min(int(self._config.ctx_size), 2048),
-                        extra_args_override=[],
-                    ),
+                    name="1차 시도",
+                    cmd=self._build_command(prompt_arg=prompt_arg, params=params),
                     cwd=cwd,
+                    prompt_mode=prompt_mode,
+                    prompt_file_flag=prompt_file_flag if prompt_mode == "file" else None,
+                    prompt_file_created=prompt_file_created,
                 ),
                 params.timeout_ms,
             )
-            if second_attempt.os_error:
+            if first_attempt.os_error:
                 raise EngineError(
-                    error="bitnetcpp 실행에 실패했습니다.",
-                    detail="\n\n".join(
-                        [
-                            "bitnetcpp 프로세스 크래시 후 안전모드 재시도 시작 실패",
-                            self._attempt_detail(first_attempt),
-                            self._attempt_detail(second_attempt),
-                        ]
-                    ),
+                    error="bitnetcpp 서브프로세스를 시작하지 못했습니다.",
+                    detail=self._attempt_detail(first_attempt),
                     status_code=503,
                 )
 
-            completed = second_attempt.completed
+            completed = first_attempt.completed
             assert completed is not None
-            if completed.returncode != 0:
+
+            if completed.returncode != 0 and self._is_crash_code(completed.returncode):
+                second_attempt = self._run_attempt(
+                    _ProcessAttempt(
+                        name="2차 시도(안전모드)",
+                        cmd=self._build_command(
+                            prompt_arg=prompt_arg,
+                            params=params,
+                            threads_override=1,
+                            ctx_size_override=min(int(self._config.ctx_size), 2048),
+                            extra_args_override=[],
+                        ),
+                        cwd=cwd,
+                        prompt_mode=prompt_mode,
+                        prompt_file_flag=prompt_file_flag if prompt_mode == "file" else None,
+                        prompt_file_created=prompt_file_created,
+                    ),
+                    params.timeout_ms,
+                )
+                if second_attempt.os_error:
+                    raise EngineError(
+                        error="bitnetcpp 실행에 실패했습니다.",
+                        detail="\n\n".join(
+                            [
+                                "bitnetcpp 프로세스 크래시 후 안전모드 재시도 시작 실패",
+                                self._attempt_detail(first_attempt),
+                                self._attempt_detail(second_attempt),
+                            ]
+                        ),
+                        status_code=503,
+                    )
+
+                completed = second_attempt.completed
+                assert completed is not None
+                if completed.returncode != 0:
+                    raise EngineError(
+                        error="bitnetcpp 실행에 실패했습니다.",
+                        detail="\n\n".join(
+                            [
+                                "bitnetcpp 프로세스 크래시 후 안전모드 재시도까지 실패",
+                                self._attempt_detail(first_attempt),
+                                self._attempt_detail(second_attempt),
+                            ]
+                        ),
+                        status_code=503,
+                    )
+
+            elif completed.returncode != 0:
                 raise EngineError(
                     error="bitnetcpp 실행에 실패했습니다.",
-                    detail="\n\n".join(
-                        [
-                            "bitnetcpp 프로세스 크래시 후 안전모드 재시도까지 실패",
-                            self._attempt_detail(first_attempt),
-                            self._attempt_detail(second_attempt),
-                        ]
-                    ),
+                    detail=self._attempt_detail(first_attempt),
                     status_code=503,
                 )
 
-        elif completed.returncode != 0:
-            raise EngineError(
-                error="bitnetcpp 실행에 실패했습니다.",
-                detail=self._attempt_detail(first_attempt),
-                status_code=503,
-            )
-
-        text = self._clean_output(completed.stdout, completed.stderr)
-        text, stop_reason = self._apply_stop(text, params.stop)
-        text = text.strip()
-        if not text:
-            raise EngineError(
-                error="bitnetcpp가 빈 텍스트를 반환했습니다.",
-                detail="empty_text",
-                status_code=503,
-            )
-        return text, stop_reason, 0
+            text = self._clean_output(completed.stdout, completed.stderr)
+            text, stop_reason = self._apply_stop(text, params.stop)
+            text = text.strip()
+            if not text:
+                raise EngineError(
+                    error="bitnetcpp가 빈 텍스트를 반환했습니다.",
+                    detail="empty_text",
+                    status_code=503,
+                )
+            return text, stop_reason, 0
+        finally:
+            if tmp_path is not None:
+                with suppress(Exception):
+                    tmp_path.unlink()
 
     def generate_stream(self, prompt: str, *, params: GenerateParams) -> Iterator[str]:
         text, _, _ = self.generate_nonstream(prompt, params=params)
@@ -362,4 +461,5 @@ class BitnetCppEngine:
         return _iter()
 
     def debug_command_preview(self, prompt: str, params: GenerateParams) -> str:
-        return " ".join(shlex.quote(v) for v in self._build_command(prompt, params))
+        prompt_arg = ["-p", prompt]
+        return " ".join(shlex.quote(v) for v in self._build_command(prompt_arg=prompt_arg, params=params))
