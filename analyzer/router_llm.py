@@ -243,7 +243,7 @@ def route_with_llm(text: str, session_state: dict, bitnet_client: BitnetClient) 
         temperature=0.1,
         top_p=0.9,
         timeout_ms=45000,
-        stop=None,
+        stop=[],
     )
     if not ok:
         return False, [], f"engine_error:{reply[:80]}"

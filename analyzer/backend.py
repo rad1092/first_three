@@ -142,6 +142,10 @@ class BitnetClient:
         stop: list[str] | None,
     ) -> tuple[bool, str]:
         self._last_error = None
+        if isinstance(stop, list):
+            stop_list = [str(s) for s in stop if str(s)]
+        else:
+            stop_list = []
         body = {
             "prompt": prompt,
             "stream": False,
@@ -149,7 +153,7 @@ class BitnetClient:
             "temperature": temperature,
             "top_p": top_p,
             "timeout_ms": timeout_ms,
-            "stop": stop,
+            "stop": stop_list,
         }
 
         try:
@@ -278,7 +282,7 @@ class BitnetClient:
             temperature=temperature,
             top_p=top_p,
             timeout_ms=timeout_ms,
-            stop=stop,
+            stop=stop or [],
         )
 
 
